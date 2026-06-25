@@ -1,0 +1,56 @@
+# Dependencies
+node_modules/
+
+# Next.js
+.next/
+out/
+
+# TypeScript
+*.tsbuildinfo
+
+# Environment
+.env
+.env.local
+
+# macOS
+.DS_Store
+
+# Runtime data
+Project/
+workspace/
+outputs/
+logs/
+
+# Runtime artifacts
+*.bak
+*.corrupt-*
+
+# Coverage
+coverage/
+
+# Editor
+.vscode/
+.idea/
+
+# Campaign runtime
+campaigns/
+Campaigns/
+
+# Generated documentation
+generated/
+artifacts/
+
+# Local workspaces
+
+# Temporary outputs
+tmp/
+temp/
+
+# Runtime archives
+*.log
+
+
+# Campaign Runner runtime artifacts
+.campaign_runner_last_response_*
+.campaign_runner_rejected_response_*
+
