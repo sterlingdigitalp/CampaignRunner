@@ -29,12 +29,40 @@ async function listFiles(dir: string): Promise<ArtifactFile[]> {
 
 export async function loadArtifacts(projectRoot: string) {
   const paths = projectPaths(projectRoot);
-  const [outputs, generatedFiles, runLog, summary, metrics, executionState, policy] = await Promise.all([
+  const [
+    outputs,
+    generatedFiles,
+    repairFiles,
+    runLog,
+    summary,
+    compilerSummary,
+    campaignAst,
+    taskGraph,
+    compilerReport,
+    plannerReport,
+    metrics,
+    metricsValidation,
+    benchmark,
+    benchmarkSummary,
+    configValidation,
+    executionState,
+    policy
+  ] = await Promise.all([
     listFiles(paths.outputs),
     listFiles(paths.workspace),
+    listFiles(paths.repairs),
     fs.readFile(paths.runLog, "utf8").catch(() => ""),
     fs.readFile(paths.summary, "utf8").catch(() => ""),
+    fs.readFile(paths.campaignSummary, "utf8").catch(() => ""),
+    fs.readFile(paths.campaignAst, "utf8").catch(() => ""),
+    fs.readFile(paths.taskGraph, "utf8").catch(() => ""),
+    fs.readFile(paths.compilerReport, "utf8").catch(() => ""),
+    fs.readFile(paths.plannerReport, "utf8").catch(() => ""),
     fs.readFile(paths.metrics, "utf8").catch(() => ""),
+    fs.readFile(paths.metricsValidation, "utf8").catch(() => ""),
+    fs.readFile(paths.benchmark, "utf8").catch(() => ""),
+    fs.readFile(paths.benchmarkSummary, "utf8").catch(() => ""),
+    fs.readFile(paths.configValidation, "utf8").catch(() => ""),
     fs.readFile(paths.executionState, "utf8").catch(() => ""),
     fs.readFile(paths.policy, "utf8").catch(() => "")
   ]);
@@ -47,9 +75,18 @@ export async function loadArtifacts(projectRoot: string) {
   return {
     outputs: outputs.slice(0, 200),
     generatedFiles: generatedFiles.slice(0, 200),
+    repairFiles: repairFiles.slice(0, 200),
     runLog,
-    summary: recoveredSummary,
+    summary: compilerSummary || recoveredSummary,
+    campaignAst,
+    taskGraph,
+    compilerReport,
+    plannerReport,
     metrics: recoveredMetrics,
+    metricsValidation,
+    benchmark,
+    benchmarkSummary,
+    configValidation,
     executionState: recoveredExecutionState,
     policy: recoveredPolicy
   };

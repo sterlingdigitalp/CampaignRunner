@@ -33,6 +33,12 @@ export function getCampaignProfile(name: CampaignProfileName = "Generic"): Campa
       builderProtocol: "FILE_BLOCKS",
       verificationPipeline: [{ name: "Files Exist", enabled: true, command: "test -n \"$(find . -type f -not -name '.*' | head -1)\"", timeoutSeconds: 20, continueOnFailure: false }],
       workspaceExpectations: ["Research campaigns should not invoke build verification by default."]
+    },
+    Documentation: {
+      name: "Documentation",
+      builderProtocol: "FILE_BLOCKS",
+      verificationPipeline: [{ name: "Files Exist", enabled: true, command: "test -n \"$(find . -type f -not -name '.*' | head -1)\"", timeoutSeconds: 20, continueOnFailure: false }],
+      workspaceExpectations: ["Documentation campaigns produce file-backed written deliverables."]
     }
   };
   return profiles[name];

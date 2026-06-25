@@ -4,11 +4,23 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Eye, FolderOpen, Pause, Play, RotateCw, Save, Settings, TerminalSquare, TimerReset } from "lucide-react";
 import { validateCampaignPrompts } from "./lib/campaign-validation";
 import { parseCampaign } from "./lib/parser";
-import type { CampaignCheckpoint, CampaignMetadata, CampaignPrompt, CampaignValidation, ExecutionPolicy, PersistedExecutionState, ProjectSummary, RunnerHistory, RunnerSettings } from "./lib/types";
+import type { CampaignBrief, CampaignCheckpoint, CampaignMetadata, CampaignPlanResult, CampaignPrompt, CampaignValidation, ExecutionPolicy, PersistedExecutionState, PlannerReport, ProjectSummary, RunnerHistory, RunnerSettings } from "./lib/types";
 
 type Screen = "create" | "review" | "settings" | "dashboard" | "artifacts";
 type ArtifactFile = { name: string; path: string; updatedAt: string; size: number };
-type Artifacts = { outputs: ArtifactFile[]; generatedFiles: ArtifactFile[]; runLog: string; summary: string; metrics: string; executionState: string; policy: string };
+type Artifacts = {
+  outputs: ArtifactFile[];
+  generatedFiles: ArtifactFile[];
+  runLog: string;
+  summary: string;
+  campaignAst: string;
+  taskGraph: string;
+  compilerReport: string;
+  plannerReport: string;
+  metrics: string;
+  executionState: string;
+  policy: string;
+};
 type RuntimePreview = { systemPrompt: string; campaignHeader: string; hourPrompt: string; runtimePrompt: string; estimatedTokens: number; repairPrompt: string };
 type StatusPanel = {
   workspace: string;
@@ -80,12 +92,22 @@ function Metric({ label, value }: { label: string; value: React.ReactNode }) {
 
 export default function Home() {
   const [screen, setScreen] = useState<Screen>("create");
+  const [brief, setBrief] = useState<CampaignBrief>({
+    projectName: "",
+    projectType: "Documentation",
+    workspace: "workspace",
+    builderProfile: "Documentation",
+    targetModel: "Qwen3.6 35B A3B MTP",
+    estimatedTaskSize: "Medium",
+    brief: ""
+  });
   const [campaignText, setCampaignText] = useState("");
   const [projectRoot, setProjectRoot] = useState(defaultProjectRoot);
   const [reviewTitle, setReviewTitle] = useState("");
   const [reviewMetadata, setReviewMetadata] = useState<CampaignMetadata | null>(null);
   const [reviewCheckpoints, setReviewCheckpoints] = useState<CampaignCheckpoint[]>([]);
   const [reviewPrompts, setReviewPrompts] = useState<CampaignPrompt[]>([]);
+  const [plannerReport, setPlannerReport] = useState<PlannerReport | null>(null);
   const [campaignValidation, setCampaignValidation] = useState<CampaignValidation | null>(null);
   const [project, setProject] = useState<ProjectSummary | null>(null);
   const [settingsDraft, setSettingsDraft] = useState<RunnerSettings | null>(null);
@@ -93,13 +115,27 @@ export default function Home() {
   const [artifacts, setArtifacts] = useState<Artifacts | null>(null);
   const [runtimePreview, setRuntimePreview] = useState<RuntimePreview | null>(null);
   const [statusPanel, setStatusPanel] = useState<StatusPanel | null>(null);
+  const [developerMode, setDeveloperMode] = useState(false);
   const [message, setMessage] = useState("Paste a campaign specification to begin.");
   const [busy, setBusy] = useState(false);
 
-  const completedCount = project?.history.completedSteps.length ?? 0;
-  const totalTasks = project?.prompts.length ?? reviewPrompts.length;
-  const progress = Math.round((completedCount / Math.max(1, totalTasks)) * 100);
-  const currentPrompt = project?.prompts.find((prompt) => prompt.number === project.history.currentStep);
+  const dashboard = project?.runtimeDashboard;
+  const reviewGroups = useMemo(() => {
+    const groups = new Map<string, CampaignPrompt[]>();
+    reviewPrompts.forEach((prompt) => {
+      const milestone = prompt.milestone ?? "Unassigned";
+      groups.set(milestone, [...(groups.get(milestone) ?? []), prompt]);
+    });
+    return [...groups.entries()].map(([milestone, prompts]) => ({ milestone, prompts }));
+  }, [reviewPrompts]);
+  const reviewCompilerReport = useMemo(() => {
+    if (!campaignText.trim()) return null;
+    try {
+      return parseCampaign(campaignText).compilerReport;
+    } catch {
+      return null;
+    }
+  }, [campaignText]);
 
   const loadProject = useCallback(
     async (root = projectRoot) => {
@@ -129,6 +165,7 @@ export default function Home() {
 
   useEffect(() => {
     const stored = localStorage.getItem("campaignRunner.projectRoot");
+    setDeveloperMode(localStorage.getItem("campaignRunner.developerMode") === "true");
     if (stored) {
       setProjectRoot(stored);
       loadProject(stored)
@@ -151,7 +188,7 @@ export default function Home() {
 
   useEffect(() => {
     const id = window.setInterval(async () => {
-      if (!project || project.settings.paused || project.history.completedSteps.length >= project.prompts.length || !project.history.nextRunAt) return;
+      if (!project || project.settings.paused || project.runtimeDashboard.completed >= project.runtimeDashboard.taskCount || !project.history.nextRunAt) return;
       if (Date.now() < new Date(project.history.nextRunAt).getTime()) return;
       try {
         setBusy(true);
@@ -180,9 +217,41 @@ export default function Home() {
     []
   );
 
-  function generateReview() {
-    const parsed = parseCampaign(campaignText);
+  async function generateReview() {
+    setBusy(true);
+    try {
+      const plan = await postJson<CampaignPlanResult>("/api/plan", brief);
+      if (plan.plannerReport && !plan.plannerReport.ready) {
+        setPlannerReport(plan.plannerReport);
+        setCampaignText(plan.campaignText);
+        setCampaignValidation(plan.validation);
+        setMessage("Planner failed to generate a valid Campaign Specification. Regenerate or edit the brief.");
+        setScreen("create");
+        return;
+      }
+      const parsed = parseCampaign(plan.campaignText);
+      const validation = plan.validation;
+      setCampaignText(plan.campaignText);
+      setPlannerReport(plan.plannerReport ?? null);
+      setReviewTitle(parsed.title);
+      setReviewMetadata(parsed.metadata);
+      setReviewCheckpoints(parsed.checkpoints);
+      setReviewPrompts(parsed.prompts);
+      setCampaignValidation(validation);
+      setMessage(validation.valid ? `Validated campaign planned with ${parsed.prompts.length} tasks.` : validation.errors[0] ?? "Campaign validation failed.");
+      setScreen("review");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to plan campaign.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function importCampaignText(text: string) {
+    const parsed = parseCampaign(text);
     const validation = validateCampaignPrompts(parsed.prompts, parsed.metadata, parsed.checkpoints);
+    setCampaignText(text);
+    setPlannerReport(null);
     setReviewTitle(parsed.title);
     setReviewMetadata(parsed.metadata);
     setReviewCheckpoints(parsed.checkpoints);
@@ -192,13 +261,23 @@ export default function Home() {
     setScreen("review");
   }
 
+  function exportCampaign() {
+    const blob = new Blob([campaignText], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${(reviewMetadata?.campaignId || reviewTitle || "campaign").replace(/[^a-z0-9_-]+/gi, "_")}.md`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
   async function saveCampaign() {
     setBusy(true);
     try {
       const saved = await postJson<ProjectSummary>("/api/campaign/create", {
         campaignText,
         projectRoot,
-        prompts: reviewPrompts
+        plannerReport
       });
       setProject(saved);
       setCampaignValidation(validateCampaignPrompts(reviewPrompts, reviewMetadata ?? undefined, reviewCheckpoints));
@@ -377,21 +456,59 @@ export default function Home() {
                   <label className="text-sm font-medium">Project Folder</label>
                   <input className={fieldClass()} value={projectRoot} onChange={(event) => setProjectRoot(event.target.value)} />
                 </div>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <label className="text-sm font-medium">
+                    Project Name
+                    <input className={`${fieldClass()} mt-2`} value={brief.projectName} onChange={(event) => setBrief({ ...brief, projectName: event.target.value })} />
+                  </label>
+                  <label className="text-sm font-medium">
+                    Project Type
+                    <select className={`${fieldClass()} mt-2`} value={brief.projectType} onChange={(event) => setBrief({ ...brief, projectType: event.target.value as CampaignBrief["projectType"], builderProfile: event.target.value })}>
+                      <option>Documentation</option>
+                      <option>Software</option>
+                      <option>Research</option>
+                      <option>Generic</option>
+                    </select>
+                  </label>
+                  <label className="text-sm font-medium">
+                    Workspace
+                    <input className={`${fieldClass()} mt-2`} value={brief.workspace} onChange={(event) => setBrief({ ...brief, workspace: event.target.value })} />
+                  </label>
+                  <label className="text-sm font-medium">
+                    Builder Profile
+                    <input className={`${fieldClass()} mt-2`} value={brief.builderProfile} onChange={(event) => setBrief({ ...brief, builderProfile: event.target.value })} />
+                  </label>
+                  <label className="text-sm font-medium">
+                    Target Model
+                    <input className={`${fieldClass()} mt-2`} value={brief.targetModel} onChange={(event) => setBrief({ ...brief, targetModel: event.target.value })} />
+                  </label>
+                  <label className="text-sm font-medium">
+                    Estimated Task Size
+                    <select className={`${fieldClass()} mt-2`} value={brief.estimatedTaskSize} onChange={(event) => setBrief({ ...brief, estimatedTaskSize: event.target.value as CampaignBrief["estimatedTaskSize"] })}>
+                      <option>Small</option>
+                      <option>Medium</option>
+                      <option>Large</option>
+                    </select>
+                  </label>
+                </div>
                 <div>
-                  <label className="text-sm font-medium">Paste Campaign</label>
+                  <label className="text-sm font-medium">Project Brief</label>
                   <textarea
                     className={`${fieldClass()} mt-2 min-h-[520px] font-mono`}
-                    value={campaignText}
-                    onChange={(event) => setCampaignText(event.target.value)}
-                    placeholder={"# CAMPAIGN\nTitle:\nCampaign ID:\n\n# TASK 001\nTitle:\nObjective:\nWorkspace Output:\nFILE: src/app.py"}
+                    value={brief.brief}
+                    onChange={(event) => setBrief({ ...brief, brief: event.target.value })}
+                    placeholder={"Describe what you want built, researched, or documented. Include deliverables, constraints, and success criteria in normal language."}
                   />
                 </div>
                 <div className="flex flex-wrap gap-3">
-                  <Button onClick={generateReview} disabled={!campaignText.trim()}>
-                    <RotateCw size={16} /> Generate Campaign
+                  <Button onClick={generateReview} disabled={!brief.brief.trim() || busy}>
+                    <RotateCw size={16} /> Plan Campaign
                   </Button>
-                  <Button variant="secondary" onClick={() => setCampaignText("")}>
+                  <Button variant="secondary" onClick={() => setBrief({ ...brief, brief: "" })}>
                     Clear
+                  </Button>
+                  <Button variant="secondary" onClick={() => importCampaignText(campaignText)} disabled={!campaignText.trim()}>
+                    Import Existing Campaign
                   </Button>
                 </div>
               </div>
@@ -406,20 +523,32 @@ export default function Home() {
                   </div>
                   <div className="flex gap-3">
                     <Button variant="secondary" onClick={() => setScreen("create")}>
-                      Back
+                      Reject
+                    </Button>
+                    <Button variant="secondary" onClick={generateReview} disabled={busy}>
+                      Regenerate
+                    </Button>
+                    <Button variant="secondary" onClick={exportCampaign} disabled={!campaignText}>
+                      Export Campaign
                     </Button>
                     <Button onClick={saveCampaign} disabled={busy || reviewPrompts.length === 0 || campaignValidation?.valid === false}>
-                      <Save size={16} /> Save Campaign
+                      <Save size={16} /> Approve
                     </Button>
                   </div>
                 </div>
                 {campaignValidation && (
                   <div className="grid gap-3 border border-line bg-white p-4">
                     <div className="grid gap-3 md:grid-cols-4">
+                      <Metric label="Planner Status" value={plannerReport?.ready ? "READY" : plannerReport ? "FAILED" : "Imported"} />
+                      <Metric label="Compiler Status" value={plannerReport?.finalCompileStatus ?? (campaignValidation.valid ? "PASS" : "FAIL")} />
+                      <Metric label="Repair Count" value={plannerReport?.repairAttempts ?? 0} />
+                      <Metric label="Compile Attempts" value={plannerReport?.compilerAttempts ?? 1} />
                       <Metric label="Tasks Parsed" value={campaignValidation.stats.taskCount} />
                       <Metric label="Checkpoints" value={campaignValidation.stats.checkpointCount} />
                       <Metric label="Profile" value={campaignValidation.stats.profile ?? "Generic"} />
                       <Metric label="Builder Protocol" value={campaignValidation.stats.builderProtocol ?? "Default"} />
+                      <Metric label="Validation Status" value={campaignValidation.valid ? "PASS" : "FAIL"} />
+                      <Metric label="Estimated Runtime" value={`${campaignValidation.stats.taskCount} tasks`} />
                       <Metric label="Average Words" value={campaignValidation.stats.averageWords} />
                       <Metric label="Longest Task" value={campaignValidation.stats.longestPromptNumber ? `Task ${String(campaignValidation.stats.longestPromptNumber).padStart(3, "0")}` : "None"} />
                       <Metric label="Longest Words" value={campaignValidation.stats.longestPromptWords} />
@@ -430,15 +559,48 @@ export default function Home() {
                     {campaignValidation.warnings.length > 0 && <MessageList title="Warnings & Task Size Advisor" items={campaignValidation.warnings} tone="warning" />}
                   </div>
                 )}
-                <div className="grid max-h-[610px] gap-3 overflow-auto pr-2">
-                  {reviewPrompts.map((prompt, index) => (
-                    <div key={prompt.filename} className="border border-line bg-white p-3">
-                      <div className="mb-2 flex items-center gap-3">
-                        <span className="w-20 text-sm font-semibold">Task {String(prompt.number).padStart(3, "0")}</span>
-                        <input className={fieldClass()} value={prompt.title} onChange={(event) => updatePrompt(index, { title: event.target.value })} />
-                      </div>
-                      <textarea className={`${fieldClass()} min-h-28 font-mono`} value={prompt.body} onChange={(event) => updatePrompt(index, { body: event.target.value })} />
+                {developerMode && reviewCompilerReport && (
+                  <div className="grid gap-3 border border-line bg-white p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <h3 className="font-semibold">Developer Compiler View</h3>
+                      <span className="text-sm text-neutral-600">Compile Status: {reviewCompilerReport.status}</span>
                     </div>
+                    <div className="grid gap-3 md:grid-cols-6">
+                      <Metric label="Lexer" value={reviewCompilerReport.pipelineSummary.lexerTaskTokens} />
+                      <Metric label="AST" value={reviewCompilerReport.pipelineSummary.astTaskNodes} />
+                      <Metric label="Campaign" value={reviewCompilerReport.pipelineSummary.campaignExecutableTasks} />
+                      <Metric label="Validator" value={reviewCompilerReport.pipelineSummary.validatorTaskCount} />
+                      <Metric label="Renderer" value={reviewCompilerReport.pipelineSummary.rendererTaskCards} />
+                      <Metric label="Duplicate Stage" value={reviewCompilerReport.pipelineSummary.duplicateIntroducedAt} />
+                    </div>
+                  </div>
+                )}
+                <div className="grid max-h-[610px] gap-4 overflow-auto pr-2">
+                  {reviewGroups.map((group) => (
+                    <section key={group.milestone} className="grid gap-3">
+                      <div className="border-b border-line pb-2">
+                        <h3 className="text-sm font-semibold">{group.milestone}</h3>
+                        <p className="text-xs text-neutral-500">{group.prompts.length} tasks</p>
+                      </div>
+                      {group.prompts.map((prompt) => {
+                        const index = reviewPrompts.findIndex((item) => item.filename === prompt.filename);
+                        return (
+                          <div key={prompt.filename} className="border border-line bg-white p-3">
+                            <div className="mb-2 flex items-center gap-3">
+                              <span className="w-20 text-sm font-semibold">Task {String(prompt.number).padStart(3, "0")}</span>
+                              <input className={fieldClass()} value={prompt.title} onChange={(event) => updatePrompt(index, { title: event.target.value })} />
+                            </div>
+                            <div className="mb-2 grid gap-2 text-xs text-neutral-600 md:grid-cols-4">
+                              <div>Type: {prompt.taskType ?? "Unspecified"}</div>
+                              <div>Depends: {(prompt.dependsOn ?? []).length ? prompt.dependsOn?.map((item) => String(item).padStart(3, "0")).join(", ") : "None"}</div>
+                              <div>Outputs: {(prompt.workspaceOutput ?? []).length}</div>
+                              <div>Line: {prompt.lineNumber ?? "Unknown"}</div>
+                            </div>
+                            <textarea className={`${fieldClass()} min-h-28 font-mono`} value={prompt.body} onChange={(event) => updatePrompt(index, { body: event.target.value })} />
+                          </div>
+                        );
+                      })}
+                    </section>
                   ))}
                 </div>
               </div>
@@ -564,27 +726,27 @@ export default function Home() {
                     </div>
                   </div>
                 )}
-                <div>
-                  <div className="mb-2 flex justify-between text-sm">
-                    <span>Campaign Progress</span>
-                    <span>{progress}%</span>
-                  </div>
-                  <div className="h-4 border border-line bg-white">
-                    <div className="h-full bg-action" style={{ width: `${progress}%` }} />
-                  </div>
-                </div>
-                <div className="grid gap-3 md:grid-cols-4">
-                  <Metric label="Current Task" value={completedCount >= totalTasks ? "Complete" : `Task ${String(project.history.currentStep).padStart(3, "0")}`} />
-                  <Metric label="Final Status" value={project.history.executions.at(-1)?.finalStatus ?? "Ready"} />
-                  <Metric label="Completed" value={completedCount} />
-                  <Metric label="Remaining" value={Math.max(0, totalTasks - completedCount)} />
-                  <Metric label="Last Runtime" value={project.history.lastRuntimeSeconds ? `${project.history.lastRuntimeSeconds}s` : "None"} />
-                </div>
-                <div className="grid gap-3 md:grid-cols-4">
-                  <Metric label="Campaign" value={project.campaignMetadata.title} />
-                  <Metric label="Tasks" value={project.prompts.length} />
-                  <Metric label="Checkpoints" value={project.checkpoints.length} />
-                  <Metric label="Milestone" value={project.checkpoints.length ? `${project.checkpoints.length} checkpoints` : "None"} />
+	                <div>
+	                  <div className="mb-2 flex justify-between text-sm">
+	                    <span>Campaign Progress</span>
+	                    <span>{dashboard?.progress ?? 0}%</span>
+	                  </div>
+	                  <div className="h-4 border border-line bg-white">
+	                    <div className="h-full bg-action" style={{ width: `${dashboard?.progress ?? 0}%` }} />
+	                  </div>
+	                </div>
+	                <div className="grid gap-3 md:grid-cols-4">
+	                  <Metric label="Current Task" value={dashboard?.currentTaskLabel ?? "Not loaded"} />
+	                  <Metric label="Final Status" value={project.history.executions.at(-1)?.finalStatus ?? "Ready"} />
+	                  <Metric label="Completed" value={dashboard?.completed ?? 0} />
+	                  <Metric label="Remaining" value={dashboard?.remaining ?? 0} />
+	                  <Metric label="Last Runtime" value={project.history.lastRuntimeSeconds ? `${project.history.lastRuntimeSeconds}s` : "None"} />
+	                </div>
+	                <div className="grid gap-3 md:grid-cols-4">
+	                  <Metric label="Campaign" value={project.campaignMetadata.title} />
+	                  <Metric label="Tasks" value={dashboard?.taskCount ?? project.prompts.length} />
+	                  <Metric label="Checkpoints" value={project.checkpoints.length} />
+	                  <Metric label="Milestone" value={dashboard?.currentMilestone ?? "None"} />
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
                   <Metric label="Next Scheduled Run" value={project.history.nextRunAt ? new Date(project.history.nextRunAt).toLocaleString() : "Not scheduled"} />
@@ -595,10 +757,10 @@ export default function Home() {
                   <Metric label="Scheduler Status" value={project.settings.paused ? "Paused" : "Running"} />
                   <Metric label="Workspace Files" value={artifacts?.generatedFiles.length ?? "Open artifacts"} />
                 </div>
-                <div className="border border-line bg-white p-4">
-                  <div className="text-sm font-semibold">Current Task</div>
-                  <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap bg-panel p-3 text-sm">{currentPrompt?.body ?? "No current prompt available."}</pre>
-                </div>
+	                <div className="border border-line bg-white p-4">
+	                  <div className="text-sm font-semibold">Current Task</div>
+	                  <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap bg-panel p-3 text-sm">{dashboard?.currentPrompt?.body ?? "No current prompt available."}</pre>
+	                </div>
                 {runtimePreview && (
                   <div className="border border-line bg-white p-4">
                     <div className="text-sm font-semibold">Runtime Prompt Preview</div>
@@ -628,7 +790,7 @@ export default function Home() {
                   <Button variant="secondary" onClick={previewRuntimePrompt}>
                     <Eye size={16} /> Preview Runtime Prompt
                   </Button>
-                  <Button onClick={runNow} disabled={busy || completedCount >= totalTasks}>
+	                  <Button onClick={runNow} disabled={busy || (dashboard?.completed ?? 0) >= (dashboard?.taskCount ?? 0)}>
                     <Play size={16} /> Run Now
                   </Button>
                   <Button variant="secondary" onClick={() => setPaused(true)} disabled={busy || project.settings.paused}>
@@ -667,6 +829,28 @@ export default function Home() {
                   <h3 className="font-semibold">Campaign Summary</h3>
                   <pre className="mt-3 max-h-48 overflow-auto whitespace-pre-wrap bg-panel p-3 text-sm">{artifacts?.summary || "No summary generated yet."}</pre>
                 </div>
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <div className="border border-line bg-white p-4">
+                    <h3 className="font-semibold">Planner Report</h3>
+                    <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap bg-panel p-3 text-sm">{artifacts?.plannerReport || "No planner report generated yet."}</pre>
+                  </div>
+                  <div className="border border-line bg-white p-4">
+                    <h3 className="font-semibold">Compiler Report</h3>
+                    <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap bg-panel p-3 text-sm">{artifacts?.compilerReport || "No compiler report generated yet."}</pre>
+                  </div>
+                </div>
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <div className="border border-line bg-white p-4">
+                    <h3 className="font-semibold">Task Graph</h3>
+                    <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap bg-panel p-3 text-sm">{artifacts?.taskGraph || "No task graph generated yet."}</pre>
+                  </div>
+                </div>
+                {developerMode && (
+                  <div className="border border-line bg-white p-4">
+                    <h3 className="font-semibold">Campaign AST</h3>
+                    <pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap bg-panel p-3 text-sm">{artifacts?.campaignAst || "No AST generated yet."}</pre>
+                  </div>
+                )}
                 <div className="border border-line bg-white p-4">
                   <h3 className="font-semibold">Execution History</h3>
                   <div className="mt-3 max-h-48 overflow-auto text-sm">

@@ -46,7 +46,13 @@ export function validateFileProtocol(response: string): FileProtocolValidationRe
     const next = fileHeaderIndexes[headerIndex + 1];
     const match = /^FILE:\s*(.+)$/.exec(current.line);
     if (!match) {
-      errors.push({ code: "MALFORMED_HEADER", message: `Malformed FILE header on line ${current.index + 1}.` });
+      errors.push({
+        code: "MALFORMED_HEADER",
+        message: `Malformed FILE header on line ${current.index + 1}.`,
+        line: current.index + 1,
+        expectedSyntax: "FILE: relative/path",
+        actualSyntax: current.line
+      });
       continue;
     }
     const normalized = normalizeProtocolPath(match[1]);

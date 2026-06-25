@@ -1,6 +1,6 @@
 import type { CampaignCheckpoint, CampaignMetadata, CampaignPrompt, CampaignValidation } from "./types";
 
-const KNOWN_TASK_TYPES = new Set(["CREATE", "MODIFY", "REVIEW", "VERIFY", "REFACTOR", "FINALIZE", "LEGACY"]);
+const KNOWN_TASK_TYPES = new Set(["CREATE", "MODIFY", "REVIEW", "VERIFY", "REFACTOR", "FINALIZE", "SEARCH", "SYNTHESIZE", "REPORT", "LEGACY"]);
 
 function wordCount(value: string) {
   return value.trim().split(/\s+/).filter(Boolean).length;

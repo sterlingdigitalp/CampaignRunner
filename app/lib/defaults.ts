@@ -78,11 +78,29 @@ export function defaultMetrics(): ExecutionMetrics {
     verificationPipelineRuns: 0,
     verificationPipelineSuccesses: 0,
     verificationPipelineFailures: 0,
+    verificationPipelineNoopRuns: 0,
     individualVerifierPasses: 0,
     individualVerifierFailures: 0,
     repairInvocations: 0,
     repairSuccesses: 0,
     repairFailures: 0,
+    protocolFailuresByCategory: [],
+    duplicateFileFrequency: 0,
+    malformedHeaderFrequency: 0,
+    repairSuccessByCategory: [],
+    averageRepairDepth: 0,
+    averageRepairsBeforeConvergence: 0,
+    topRecurringProtocolFailures: [],
+    completionMetrics: {
+      completedTasks: 0,
+      totalTasks: 0,
+      remainingTasks: 0,
+      completionRate: 0
+    },
+    metricValidation: {
+      status: "PASS",
+      diagnostics: []
+    },
     mostCommonVerifierFailures: [],
     campaignCompletionRate: 0
   };

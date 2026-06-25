@@ -8,7 +8,7 @@ import { logEvent } from "./logger";
 import { parseCampaign } from "./parser";
 import { validateSettings } from "./settings-validation";
 import { writeCampaignSummary } from "./summary";
-import type { CampaignCheckpoint, CampaignMetadata, CampaignPrompt, FinalCertification, ProjectSummary, RunnerHistory, RunnerSettings } from "./types";
+import type { CampaignCheckpoint, CampaignMetadata, CampaignMilestone, CampaignPrompt, FinalCertification, PlannerReport, ProjectSummary, RunnerHistory, RunnerSettings } from "./types";
 
 function fieldFromBody(body: string, label: string) {
   return new RegExp(`^${label}:\\s*(.*)$`, "im").exec(body)?.[1]?.trim();
@@ -26,35 +26,67 @@ function parseDependsFromBody(body: string) {
 export async function createCampaign(
   projectRoot: string,
   campaignText: string,
-  prompts: CampaignPrompt[],
+  _prompts: CampaignPrompt[],
   metadata?: CampaignMetadata,
   checkpoints: CampaignCheckpoint[] = [],
-  finalCertification: FinalCertification | null = null
+  finalCertification: FinalCertification | null = null,
+  plannerReport?: PlannerReport
 ) {
   const paths = projectPaths(projectRoot);
   const settings = defaultSettings(projectRoot);
   const history = defaultHistory();
   const parsed = parseCampaign(campaignText);
+  const campaignPrompts = parsed.prompts;
   const campaignMetadata = metadata ?? parsed.metadata;
+  const taskGraph = {
+    edges: campaignPrompts.flatMap((prompt) => (prompt.dependsOn ?? []).map((dependency) => ({ from: dependency, to: prompt.number }))),
+    nodes: campaignPrompts.map((prompt) => ({
+      taskNumber: prompt.number,
+      title: prompt.title,
+      milestone: prompt.milestone,
+      dependsOn: prompt.dependsOn ?? [],
+      dependents: campaignPrompts.filter((candidate) => (candidate.dependsOn ?? []).includes(prompt.number)).map((candidate) => candidate.number),
+      lineNumber: prompt.lineNumber
+    }))
+  };
+  const compilerReport = {
+    ...parsed.compilerReport,
+    taskCount: campaignPrompts.length,
+    taskNumbers: campaignPrompts.map((prompt) => prompt.number).sort((a, b) => a - b)
+  };
+  const campaignSummary = {
+    ...parsed.campaignSummary,
+    campaignTitle: campaignMetadata.title,
+    taskCount: campaignPrompts.length,
+    dependencyEdges: taskGraph.edges.length,
+    validationStatus: compilerReport.status
+  };
 
   await Promise.all([
     ensureDir(paths.root),
     ensureDir(paths.logs),
     ensureDir(paths.outputs),
     ensureDir(paths.workspace),
-    ensureDir(paths.prompts)
+    ensureDir(paths.prompts),
+    ensureDir(paths.repairs)
   ]);
 
   await fs.writeFile(paths.campaign, campaignText.trim() + "\n", "utf8");
   await writeJson(paths.campaignJson, {
     metadata: campaignMetadata,
-    taskCount: prompts.length,
-    tasks: prompts,
+    taskCount: campaignPrompts.length,
+    milestones: parsed.milestones,
+    tasks: campaignPrompts,
     checkpoints,
     finalCertification
   });
+  await writeJson(paths.campaignAst, parsed.ast);
+  await writeJson(paths.taskGraph, taskGraph);
+  await writeJson(paths.campaignSummary, campaignSummary);
+  await writeJson(paths.compilerReport, compilerReport);
+  if (plannerReport) await writeJson(paths.plannerReport, plannerReport);
   await Promise.all(
-    prompts.map((prompt) => fs.writeFile(path.join(paths.prompts, prompt.filename), prompt.body.trim() + "\n", "utf8"))
+    campaignPrompts.map((prompt) => fs.writeFile(path.join(paths.prompts, prompt.filename), prompt.body.trim() + "\n", "utf8"))
   );
   await writeJson(paths.settings, settings);
   await writeJson(paths.policy, defaultExecutionPolicy());
@@ -64,7 +96,7 @@ export async function createCampaign(
 
   const project = await loadProject(projectRoot);
   await writeCampaignSummary(project);
-  await logEvent(projectRoot, "CAMPAIGN_CREATED", `Created campaign with ${prompts.length} tasks.`);
+  await logEvent(projectRoot, "CAMPAIGN_CREATED", `Created campaign with ${campaignPrompts.length} tasks.`);
   return project;
 }
 
@@ -72,11 +104,15 @@ export async function loadPrompts(projectRoot: string): Promise<CampaignPrompt[]
   const paths = projectPaths(projectRoot);
   const files = await fs.readdir(paths.prompts).catch(() => []);
   const markdown = files.filter((file) => /^\d{2,5}_.*\.md$/.test(file)).sort();
+  const storedCampaign = await readJson<{ tasks?: CampaignPrompt[] }>(paths.campaignJson, {});
+  const storedByFile = new Map((storedCampaign.tasks ?? []).map((task) => [task.filename, task]));
+  const storedByNumber = new Map((storedCampaign.tasks ?? []).map((task) => [task.number, task]));
 
   return Promise.all(
     markdown.map(async (file) => {
       const body = await fs.readFile(path.join(paths.prompts, file), "utf8");
       const number = Number(/^(\d{2,5})_/.exec(file)?.[1] ?? 0);
+      const stored = storedByFile.get(file) ?? storedByNumber.get(number);
       const firstMeaningfulLine =
         body
           .split("\n")
@@ -85,13 +121,15 @@ export async function loadPrompts(projectRoot: string): Promise<CampaignPrompt[]
 
       return {
         number,
-        title: firstMeaningfulLine.replace(/^#+\s*/, "").replace(/^title\s*:\s*/i, ""),
-        taskType: /^HOUR\s+\d{1,3}/i.test(body) ? "LEGACY" : fieldFromBody(body, "Task Type"),
-        dependsOn: parseDependsFromBody(body),
-        objective: fieldFromBody(body, "Objective"),
-        constraints: fieldFromBody(body, "Constraints"),
-        verificationGoal: fieldFromBody(body, "Verification Goal"),
-        workspaceOutput: body
+        title: stored?.title ?? firstMeaningfulLine.replace(/^#+\s*/, "").replace(/^title\s*:\s*/i, ""),
+        milestone: stored?.milestone,
+        lineNumber: stored?.lineNumber,
+        taskType: stored?.taskType ?? (/^HOUR\s+\d{1,3}/i.test(body) ? "LEGACY" : fieldFromBody(body, "Task Type")),
+        dependsOn: stored?.dependsOn ?? parseDependsFromBody(body),
+        objective: stored?.objective ?? fieldFromBody(body, "Objective"),
+        constraints: stored?.constraints ?? fieldFromBody(body, "Constraints"),
+        verificationGoal: stored?.verificationGoal ?? fieldFromBody(body, "Verification Goal"),
+        workspaceOutput: stored?.workspaceOutput ?? body
           .split("\n")
           .filter((line) => /^FILE:\s*/i.test(line))
           .map((line) => line.replace(/^FILE:\s*/i, "").trim()),
@@ -108,6 +146,7 @@ export async function loadProject(projectRoot: string): Promise<ProjectSummary> 
   const parsed = parseCampaign(campaignText);
   const storedCampaign = await readJson<{
     metadata?: CampaignMetadata;
+    milestones?: CampaignMilestone[];
     checkpoints?: CampaignCheckpoint[];
     finalCertification?: FinalCertification | null;
   }>(paths.campaignJson, {});
@@ -115,6 +154,12 @@ export async function loadProject(projectRoot: string): Promise<ProjectSummary> 
   const settings = await readJson<RunnerSettings>(paths.settings, defaultSettings(projectRoot));
   const normalizedSettings = { ...defaultSettings(projectRoot), ...settings };
   const { history, recovery } = await readHistoryRecovering(projectRoot);
+  const mergedHistory = { ...defaultHistory(), ...history };
+  const taskCount = prompts.length;
+  const completed = mergedHistory.completedSteps.length;
+  const currentPrompt = prompts.find((prompt) => prompt.number === mergedHistory.currentStep) ?? null;
+  const remaining = Math.max(0, taskCount - completed);
+  const progress = Math.round((completed / Math.max(1, taskCount)) * 100);
   const initialLockStatus = await readLockStatus(projectRoot, normalizedSettings.lockTimeoutMinutes);
   const notifications: string[] = [];
   if (initialLockStatus.exists && initialLockStatus.stale) {
@@ -126,15 +171,26 @@ export async function loadProject(projectRoot: string): Promise<ProjectSummary> 
   return {
     campaignTitle: parsed.title,
     campaignMetadata: storedCampaign.metadata ?? parsed.metadata,
+    milestones: storedCampaign.milestones ?? parsed.milestones,
     checkpoints: storedCampaign.checkpoints ?? parsed.checkpoints,
     finalCertification: storedCampaign.finalCertification ?? parsed.finalCertification,
     projectRoot,
     settings: normalizedSettings,
-    history: { ...defaultHistory(), ...history },
+    history: mergedHistory,
     prompts,
     recovery,
     lockStatus,
-    notifications
+    notifications,
+    runtimeDashboard: {
+      currentTask: completed >= taskCount ? null : mergedHistory.currentStep,
+      currentTaskLabel: completed >= taskCount ? "Complete" : `Task ${String(mergedHistory.currentStep).padStart(3, "0")}`,
+      currentMilestone: currentPrompt?.milestone ?? "None",
+      completed,
+      remaining,
+      taskCount,
+      progress,
+      currentPrompt
+    }
   };
 }
 

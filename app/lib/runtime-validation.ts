@@ -87,14 +87,28 @@ export function validateMetrics(value: unknown) {
     "verificationPipelineRuns",
     "verificationPipelineSuccesses",
     "verificationPipelineFailures",
+    "verificationPipelineNoopRuns",
     "individualVerifierPasses",
     "individualVerifierFailures",
     "repairInvocations",
     "repairSuccesses",
-    "repairFailures"
+    "repairFailures",
+    "duplicateFileFrequency",
+    "malformedHeaderFrequency",
+    "averageRepairDepth",
+    "averageRepairsBeforeConvergence"
   ].forEach((key) => {
     if (data[key] !== undefined) number(data[key], key);
   });
+  [
+    "protocolFailuresByCategory",
+    "repairSuccessByCategory",
+    "topRecurringProtocolFailures"
+  ].forEach((key) => {
+    if (data[key] !== undefined) array(data[key], key);
+  });
+  if (data.completionMetrics !== undefined) object(data.completionMetrics, "completionMetrics");
+  if (data.metricValidation !== undefined) object(data.metricValidation, "metricValidation");
   array(data.mostCommonVerifierFailures, "mostCommonVerifierFailures");
   return value;
 }
