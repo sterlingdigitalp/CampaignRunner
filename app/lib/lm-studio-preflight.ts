@@ -9,6 +9,7 @@ const execFileAsync = promisify(execFile);
 const SERVER_START_TIMEOUT_MS = 30_000;
 const MODEL_LOAD_TIMEOUT_MS = 10 * 60_000;
 const PROBE_TIMEOUT_MS = 90_000;
+const MODEL_CONTEXT_LENGTH = 65536;
 
 export type PreflightResult = {
   ok: boolean;
@@ -90,8 +91,12 @@ export async function preflightLmStudio(settings: RunnerSettings): Promise<Prefl
   if (state !== "loaded") {
     messages.push(`Model ${settings.model} state is "${state}"; loading via lms (this can take minutes).`);
     try {
-      await execFileAsync(await lmsBinary(), ["load", settings.model, "--gpu", "max", "-y"], { timeout: MODEL_LOAD_TIMEOUT_MS });
-      messages.push(`Model ${settings.model} loaded.`);
+      await execFileAsync(
+        await lmsBinary(),
+        ["load", settings.model, "--gpu", "max", "--context-length", String(MODEL_CONTEXT_LENGTH), "-y"],
+        { timeout: MODEL_LOAD_TIMEOUT_MS }
+      );
+      messages.push(`Model ${settings.model} loaded at ${MODEL_CONTEXT_LENGTH} context.`);
     } catch (error) {
       messages.push(`Model load failed: ${error instanceof Error ? error.message : String(error)}`);
       return { ok: false, messages };

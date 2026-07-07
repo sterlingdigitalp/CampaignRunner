@@ -16,6 +16,7 @@ function protocolInstructions(protocol: BuilderProtocolName) {
       "You must write every file listed under this task's Workspace Output.",
       "Every content value must be the complete final file, never a diff or fragment.",
       'Escape each newline in content exactly once as \\n. Never emit double-escaped sequences like \\\\n.',
+      'When a file\'s content is itself JSON (like package.json), escape its inner quotes as \\" and keep the inner JSON complete and valid.',
       "In report.notes, record decisions or discoveries the next task needs to know (one or two sentences).",
       "Set report.status to partial or blocked only when you could not fully complete this task, and say why in blockers."
     ];
@@ -54,7 +55,12 @@ export function runtimePromptParts(prompt: CampaignPrompt, settings: RunnerSetti
 }
 
 export function estimateTokens(value: string) {
-  return Math.ceil(value.trim().split(/\s+/).filter(Boolean).length * 1.35);
+  const trimmed = value.trim();
+  const wordEstimate = trimmed.split(/\s+/).filter(Boolean).length * 1.35;
+  // Code tokenizes far denser than prose per word; the char-based floor keeps
+  // budgets honest for source-heavy content so prompts cannot overflow context.
+  const charEstimate = trimmed.length / 4;
+  return Math.ceil(Math.max(wordEstimate, charEstimate));
 }
 
 export function buildRuntimePrompt(prompt: CampaignPrompt, settings: RunnerSettings, options: PromptBuildOptions = {}) {

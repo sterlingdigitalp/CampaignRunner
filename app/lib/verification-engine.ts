@@ -39,10 +39,31 @@ export async function checkDeclaredOutputs(workspace: string, prompt: CampaignPr
   };
 }
 
+/**
+ * Verifiers must run against the WORKSPACE, but this server is itself started
+ * via `npm run`, which pollutes process.env: npm_config_local_prefix redirects
+ * child `npm install` to the app's tree, PATH exposes the app's
+ * node_modules/.bin (a stray `tsc` that masks a missing workspace install),
+ * and `next start` sets NODE_ENV=production which makes npm skip
+ * devDependencies. Strip all of it so workspace commands see a clean shell.
+ */
+function verifierEnv(): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key.startsWith("npm_") || key === "INIT_CWD" || key === "NODE_ENV") continue;
+    env[key] = value;
+  }
+  env.PATH = (env.PATH ?? "")
+    .split(":")
+    .filter((segment) => !segment.includes("/node_modules/.bin"))
+    .join(":");
+  return env;
+}
+
 function runCommand(command: string, cwd: string, timeoutSeconds: number): Promise<VerificationResult> {
   const started = Date.now();
   return new Promise((resolve) => {
-    exec(command, { cwd, timeout: timeoutSeconds * 1000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+    exec(command, { cwd, env: verifierEnv() as NodeJS.ProcessEnv, timeout: timeoutSeconds * 1000, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
       const runtimeSeconds = Math.max(0.01, (Date.now() - started) / 1000);
       const timedOut = Boolean(error && "killed" in error && error.killed);
       const exitCode = error && "code" in error && typeof error.code === "number" ? error.code : error ? 1 : 0;

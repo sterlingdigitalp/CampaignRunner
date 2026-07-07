@@ -92,6 +92,7 @@ export function validateFileProtocol(response: string): FileProtocolValidationRe
     }
     seen.add(file.relativePath);
   }
+  errors.push(...contentSanityErrors(files));
 
   return { valid: errors.length === 0, files, errors, normalizations };
 }
@@ -106,7 +107,13 @@ export function validateFileProtocol(response: string): FileProtocolValidationRe
 function unescapeDoubleEscapedContent(content: string) {
   const realNewlines = (content.match(/\n/g) ?? []).length;
   const literalNewlines = (content.match(/\\+n/g) ?? []).length;
-  if (literalNewlines < 3 || literalNewlines <= realNewlines * 3) return { content, repaired: false };
+  // Literal \n at a statement boundary (after ; { } or )) is a line break the
+  // model failed to escape, never a string escape like "\n" (those follow a
+  // quote). Catches single-line files with too few \n for the count heuristic.
+  const boundaryEscapes = (content.match(/[;{})]\s*\\+n/g) ?? []).length;
+  const singleLineCollapse = realNewlines === 0 && literalNewlines >= 1 && (literalNewlines >= 3 || boundaryEscapes >= 1);
+  const mostlyLiteral = literalNewlines >= 3 && literalNewlines > realNewlines * 3;
+  if (!singleLineCollapse && !mostlyLiteral) return { content, repaired: false };
   const repaired = content
     .replace(/\\+r\\+n/g, "\n")
     .replace(/\\+n/g, "\n")
@@ -114,6 +121,84 @@ function unescapeDoubleEscapedContent(content: string) {
     .replace(/\\"/g, '"')
     .replace(/\\+\s*$/, "");
   return { content: repaired, repaired: true };
+}
+
+/**
+ * A file whose every quote arrived as the two-character sequence \" (and none
+ * bare) is unambiguously over-escaped — the model escaped for JSON twice.
+ * Unescaping cannot corrupt legitimate content because legitimate content
+ * with escaped quotes always also contains the bare quotes that enclose them.
+ */
+function unescapeEscapedQuotes(content: string) {
+  const bareQuotes = (content.match(/(?<!\\)"/g) ?? []).length;
+  const escapedQuotes = (content.match(/\\"/g) ?? []).length;
+  if (escapedQuotes < 3 || bareQuotes > 0) return { content, repaired: false };
+  return { content: content.replace(/\\"/g, '"'), repaired: true };
+}
+
+/**
+ * JSON.parse reports exactly where a valid JSON value ended when trailing
+ * garbage follows ("Unexpected non-whitespace character after JSON at
+ * position N") — a stray extra brace is a common model artifact. Truncating
+ * at N is deterministic and provably yields valid JSON.
+ */
+function truncateTrailingJsonGarbage(content: string) {
+  try {
+    JSON.parse(content);
+    return { content, repaired: false };
+  } catch (error) {
+    const match = /after JSON at position (\d+)/.exec(error instanceof Error ? error.message : "");
+    if (!match) return { content, repaired: false };
+    const truncated = content.slice(0, Number(match[1]));
+    try {
+      JSON.parse(truncated);
+      return { content: truncated, repaired: true };
+    } catch {
+      return { content, repaired: false };
+    }
+  }
+}
+
+/**
+ * Corrupt config files are uniquely poisonous: a mangled package.json or
+ * tsconfig.json written by task N breaks every later task's verifiers, and no
+ * later task's repair loop owns the file. Reject bad content at the protocol
+ * layer so it never reaches the workspace:
+ * - any file whose content is a tiny stub of structural characters (the
+ *   observed nested-JSON escaping collapse produces literally "{\")
+ * - package.json that is not strict JSON (npm hard-fails with EJSONPARSE)
+ * - other .json files that neither parse nor even look structurally complete
+ *   (JSONC comments are legal in tsconfig.json, so only shape is checked)
+ */
+function contentSanityErrors(files: FileProtocolFile[]): FileProtocolValidationResult["errors"] {
+  const errors: FileProtocolValidationResult["errors"] = [];
+  for (const file of files) {
+    const trimmed = file.content.trim();
+    if (trimmed.length > 0 && trimmed.length < 10 && /^[{}[\]()\\"'`,:;\s]*$/.test(trimmed)) {
+      errors.push({
+        code: "EMPTY_FILE",
+        file: file.relativePath,
+        message: `${file.relativePath} content is a malformed ${trimmed.length}-character stub (${JSON.stringify(trimmed)}). Return the complete file contents.`
+      });
+      continue;
+    }
+    const isJsonFile = path.posix.extname(file.relativePath).toLowerCase() === ".json";
+    if (!isJsonFile) continue;
+    try {
+      JSON.parse(file.content);
+    } catch (error) {
+      const strict = path.posix.basename(file.relativePath) === "package.json";
+      const looksComplete = /^[{[]/.test(trimmed) && /[}\]]\s*$/.test(trimmed) && trimmed.length >= 20;
+      if (strict || !looksComplete) {
+        errors.push({
+          code: "INVALID_JSON",
+          file: file.relativePath,
+          message: `${file.relativePath} does not contain ${strict ? "strict, npm-parseable" : "complete"} JSON (${error instanceof Error ? error.message.slice(0, 120) : "parse error"}). Return the complete valid file.`
+        });
+      }
+    }
+  }
+  return errors;
 }
 
 function extractJsonObject(response: string) {
@@ -190,7 +275,15 @@ export function validateJsonFileProtocol(response: string): FileProtocolValidati
       return;
     }
     if (normalized.input !== normalized.output) normalizations.push({ input: normalized.input, output: normalized.output });
-    const unescaped = unescapeDoubleEscapedContent(content);
+    const quoteFixed = unescapeEscapedQuotes(content);
+    if (quoteFixed.repaired) {
+      repairs.push({
+        category: "PROTOCOL_INVALID_JSON",
+        strategy: "UNESCAPE_ESCAPED_QUOTES",
+        message: `${normalized.output} contained only escaped quotes; unescaped deterministically.`
+      });
+    }
+    const unescaped = unescapeDoubleEscapedContent(quoteFixed.content);
     if (unescaped.repaired) {
       repairs.push({
         category: "PROTOCOL_INVALID_JSON",
@@ -198,10 +291,22 @@ export function validateJsonFileProtocol(response: string): FileProtocolValidati
         message: `${normalized.output} contained double-escaped newlines; unescaped deterministically.`
       });
     }
-    if (!unescaped.content.trim()) {
+    let finalContent = unescaped.content;
+    if (path.posix.extname(normalized.output).toLowerCase() === ".json") {
+      const truncated = truncateTrailingJsonGarbage(finalContent);
+      if (truncated.repaired) {
+        repairs.push({
+          category: "PROTOCOL_INVALID_JSON",
+          strategy: "TRUNCATE_TRAILING_JSON_GARBAGE",
+          message: `${normalized.output} had trailing characters after a complete JSON value; truncated deterministically.`
+        });
+        finalContent = truncated.content;
+      }
+    }
+    if (!finalContent.trim()) {
       errors.push({ code: "EMPTY_FILE", message: `${normalized.output} is empty.`, file: normalized.output });
     }
-    files.push({ relativePath: normalized.output, originalPath: normalized.input, content: unescaped.content.replace(/\n+$/, "") });
+    files.push({ relativePath: normalized.output, originalPath: normalized.input, content: finalContent.replace(/\n+$/, "") });
   });
 
   const seen = new Set<string>();
@@ -211,6 +316,7 @@ export function validateJsonFileProtocol(response: string): FileProtocolValidati
     }
     seen.add(file.relativePath);
   }
+  errors.push(...contentSanityErrors(files));
 
   return { valid: errors.length === 0, files, errors, normalizations, ...(repairs.length > 0 ? { repairs } : {}), ...(report ? { report } : {}) };
 }

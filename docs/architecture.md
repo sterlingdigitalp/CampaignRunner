@@ -6,8 +6,8 @@ Campaign Runner owns execution. LM Studio only generates candidate artifacts.
 
 Two protocols are supported, selected by `execution_policy.json` (`builderProtocol`, default `FILE_JSON`):
 
-- `FILE_JSON` (default): the request includes an OpenAI-compatible `response_format: json_schema` so the model must return `{"files":[{"path","content"}]}`. Validated by `validateJsonFileProtocol` in `app/lib/file-protocol-validator.ts`, which shares path normalization with the legacy validator, deterministically unescapes double-escaped newlines (`UNESCAPE_DOUBLE_ESCAPED_CONTENT`), and falls back to `FILE:` block parsing when the response is not valid JSON.
-- `FILE_BLOCKS` (legacy): `FILE: relative/path` text blocks, unchanged.
+- `FILE_JSON` (default): the request includes an OpenAI-compatible `response_format: json_schema` so the model must return `{"files":[{"path","content"}]}`. Validated by `validateJsonFileProtocol` in `app/lib/file-protocol-validator.ts`, which shares path normalization with the legacy validator and falls back to `FILE:` block parsing when the response is not valid JSON. Deterministic content repairs (all logged as `PROTOCOL_DETERMINISTIC_REPAIR`): double-escaped newlines, fully-escaped quotes, and trailing garbage after a complete JSON value. Content-sanity gates reject tiny structural stubs, non-strict `package.json`, and structurally incomplete `.json` files at the protocol layer so corrupt config files never reach the workspace and poison later tasks' verifiers.
+- `FILE_BLOCKS` (legacy): `FILE: relative/path` text blocks, unchanged. When repeated FILE_JSON attempts die at the protocol layer, the final repair attempt automatically downshifts to FILE_BLOCKS (`PROTOCOL_DOWNSHIFT`), which has no nested-JSON escaping to get wrong.
 
 Requests also pass `reasoning_effort` from settings (tuned for gpt-oss-120b).
 
@@ -25,7 +25,11 @@ The FILE_JSON schema requires a `report` object (`status`, `notes`, `blockers`, 
 
 ## Truncation Handling and Repair Escalation
 
-`lm-studio.ts` returns `{content, truncated}` using the response `finish_reason`. A truncated attempt logs `GENERATION_TRUNCATED`, doubles the output token budget for subsequent attempts (capped at 65,536), and tells the repair prompt the response was cut off rather than malformed. Repair attempts always run at temperature 0 with reasoning effort high, regardless of first-attempt settings.
+`lm-studio.ts` returns `{content, truncated}` using the response `finish_reason`. A truncated attempt logs `GENERATION_TRUNCATED`, doubles the output token budget for subsequent attempts (capped at 65,536), and tells the repair prompt the response was cut off rather than malformed. Repair attempts run at reasoning effort high with a temperature schedule — first repair at 0 for precision, later repairs at 0.4/0.8 so a deterministic wrong answer cannot repeat identically — and the final attempt downshifts protocol after repeated protocol failures.
+
+## Verification Environment and Final Verification
+
+Verifier commands run with a sanitized environment (`verifierEnv` in `app/lib/verification-engine.ts`): all `npm_*` vars, `INIT_CWD`, `NODE_ENV`, and `node_modules/.bin` PATH segments are stripped, because the app server itself is launched via `npm run` and the inherited environment silently redirects `npm install` to the app's tree and masks missing workspace installs. The default pipeline starts with an `Install` step (`npm install`), gated like the other npm verifiers on `package.json` existing. Task ordering respects deferred dependencies (`nextEligibleStep` never runs a task past a deferred prerequisite, because it would execute under weaker maturity gates), and when the campaign completes, `runFinalVerification` runs the full applicable pipeline once against the finished workspace and reports `FINAL_VERIFICATION` PASS/FAIL in the summary.
 
 ## Declared-Output Verification
 
@@ -33,7 +37,7 @@ With `enforceDeclaredOutputs: true` (default), `checkDeclaredOutputs` in `app/li
 
 ## Git Checkpointing
 
-With `gitCheckpoints: true` (default), `app/lib/workspace-git.ts` initializes a standalone git repository inside the workspace (baseline commit, local identity, `.gitignore` covering runner diagnostics), commits after every VERIFIED task, and rolls back (`checkout -- . && clean -fd`) when a task fails or defers — so a failed task's partial files never pollute later tasks. Git is best-effort: errors log `GIT_ERROR` and never fail a task.
+With `gitCheckpoints: true` (default), `app/lib/workspace-git.ts` initializes a standalone git repository inside the workspace (baseline commit, local identity), commits after every VERIFIED task, and rolls back (`checkout -- . && clean -fd`) when a task fails or defers — so a failed task's partial files never pollute later tasks. Runner exclusions (diagnostics, node_modules, build output) live in `.git/info/exclude`, not a workspace `.gitignore`, so a model-authored `.gitignore` can never cause node_modules to be committed or diagnostics to be cleaned. Git is best-effort: errors log `GIT_ERROR` and never fail a task.
 
 ## Speculative Generation
 

@@ -53,6 +53,7 @@ export function defaultExecutionPolicy(): ExecutionPolicy {
     speculativeGeneration: true,
     checkpointsEnabled: true,
     verificationPipeline: [
+      { name: "Install", enabled: true, command: "npm install --no-audit --no-fund", timeoutSeconds: 600, continueOnFailure: false },
       { name: "Typecheck", enabled: true, command: "npm run typecheck", timeoutSeconds: 120, continueOnFailure: false },
       { name: "Lint", enabled: false, command: "npm run lint", timeoutSeconds: 120, continueOnFailure: true },
       { name: "Build", enabled: true, command: "npm run build", timeoutSeconds: 180, continueOnFailure: false },

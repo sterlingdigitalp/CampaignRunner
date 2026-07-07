@@ -179,15 +179,17 @@ export function buildRepairPrompt(
     "Return instructions:",
     ...(builderProtocol === "FILE_JSON"
       ? [
-          "Return only the corrected file(s) listed above.",
-          "Do not regenerate unrelated files.",
+          "Return every file that must change to fix the issues above.",
+          "If the Verification Output shows a different file is the cause (for example a broken tsconfig.json or package.json from an earlier task), return the corrected version of that file too.",
+          "Do not regenerate files unrelated to the failures.",
           "Respond with exactly one JSON object and nothing else, using this Builder Protocol:",
           '{"files":[{"path":"relative/path","content":"complete file contents"}]}',
           "Each path must appear exactly once in the files array."
         ]
       : [
-          "Return only the corrected FILE block(s) listed above.",
-          "Do not regenerate unrelated files.",
+          "Return every FILE block that must change to fix the issues above.",
+          "If the Verification Output shows a different file is the cause, return the corrected version of that file too.",
+          "Do not regenerate files unrelated to the failures.",
           "Do not include explanations, reasoning, examples, or markdown fences around the response.",
           "Use this exact Builder Protocol:",
           "FILE: relative/path",

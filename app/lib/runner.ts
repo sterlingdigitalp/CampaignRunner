@@ -1,11 +1,13 @@
 import { dueCheckpoint, runCheckpoint } from "./checkpoint-engine";
+import { buildExecutionContract } from "./execution-contract";
 import { executeNextHour, nextEligibleStep } from "./execution-engine";
 import { loadExecutionPolicy } from "./execution-policy";
 import { loadProject } from "./campaign-manager";
 import { writeHistoryAtomic } from "./history-manager";
 import { preflightLmStudio } from "./lm-studio-preflight";
 import { logEvent } from "./logger";
-import type { ProjectSummary, RunResult } from "./types";
+import { allVerifiersPassed, formatVerificationFailures, runVerificationPipeline } from "./verification-engine";
+import type { ExecutionPolicy, ProjectSummary, RunResult } from "./types";
 
 const HARD_FAILURE_LIMIT = 3;
 const HARD_FAILURE_BACKOFF_MS = 30_000;
@@ -83,9 +85,11 @@ export async function runNextPrompt(projectRoot: string): Promise<RunResult> {
     }
 
     if (project.history.completedSteps.length >= project.prompts.length) {
+      const final = await runFinalVerification(projectRoot, project, policy);
+      const base = messages.length > 0 ? `${messages.join(" ")} Campaign complete.` : "Campaign complete.";
       return {
-        ok: true,
-        message: messages.length > 0 ? `${messages.join(" ")} Campaign complete.` : "Campaign complete.",
+        ok: final.passed,
+        message: base + final.note,
         history: project.history
       };
     }
@@ -116,14 +120,50 @@ export async function runNextPrompt(projectRoot: string): Promise<RunResult> {
   }
 }
 
-async function windowSummary(projectRoot: string, reason: string, executed: number): Promise<RunResult> {
+/**
+ * Whole-project verification after the last task completes. Tasks that ran
+ * while the workspace was immature (e.g. before package.json existed) were
+ * verified under weaker gates; this closes that hole and makes the summary
+ * honest about the final state.
+ */
+async function runFinalVerification(projectRoot: string, project: ProjectSummary, policy: ExecutionPolicy) {
+  const { contract } = await buildExecutionContract(projectRoot, project.settings.workspace);
+  const enabled = contract.verifierPipeline.filter((step) => step.enabled);
+  if (enabled.length === 0) {
+    await logEvent(projectRoot, "FINAL_VERIFICATION", "No verifiers applicable to the final workspace.");
+    return { passed: true, note: "" };
+  }
+  const results = await runVerificationPipeline(projectRoot, project.settings.workspace, {
+    maxRepairAttempts: policy.maxRepairAttempts,
+    stopOnFailure: true,
+    retryOnTimeout: true,
+    acceptOnlyVerified: true,
+    verificationPipeline: contract.verifierPipeline
+  });
+  const passed = allVerifiersPassed(results);
+  await logEvent(
+    projectRoot,
+    "FINAL_VERIFICATION",
+    passed ? `PASS: ${enabled.map((step) => step.name).join(", ")}` : `FAIL: ${formatVerificationFailures(results).slice(0, 800)}`
+  );
+  return { passed, note: passed ? " Final verification PASS." : ` FINAL VERIFICATION FAILED: ${formatVerificationFailures(results).slice(0, 300)}` };
+}
+
+async function windowSummary(projectRoot: string, reason: string, executed: number, policy?: ExecutionPolicy): Promise<RunResult> {
   const project = await loadProject(projectRoot);
   const progress = campaignProgress(project);
   const deferredNote = progress.deferred.length > 0 ? ` Deferred tasks: [${progress.deferred.join(", ")}].` : "";
+  let finalNote = "";
+  let finalPassed = true;
+  if (progress.complete && policy) {
+    const final = await runFinalVerification(projectRoot, project, policy);
+    finalNote = final.note;
+    finalPassed = final.passed;
+  }
   const message =
-    `${reason}. Executed ${executed} task run(s); ${progress.completed}/${progress.total} tasks complete.` + deferredNote;
+    `${reason}. Executed ${executed} task run(s); ${progress.completed}/${progress.total} tasks complete.` + deferredNote + finalNote;
   await logEvent(projectRoot, "RUN_WINDOW_COMPLETED", message);
-  return { ok: progress.complete, message, history: project.history };
+  return { ok: progress.complete && finalPassed, message, history: project.history };
 }
 
 export async function runAutonomousWindow(projectRoot: string): Promise<RunResult> {
@@ -155,12 +195,12 @@ export async function runAutonomousWindow(projectRoot: string): Promise<RunResul
 
   for (;;) {
     if (Date.now() >= deadline.getTime()) {
-      return windowSummary(projectRoot, "Window deadline reached", executed);
+      return windowSummary(projectRoot, "Window deadline reached", executed, policy);
     }
 
     const project = await loadProject(projectRoot);
-    if (project.settings.paused) return windowSummary(projectRoot, "Campaign paused", executed);
-    if (project.recovery.mode) return windowSummary(projectRoot, "History recovery required", executed);
+    if (project.settings.paused) return windowSummary(projectRoot, "Campaign paused", executed, policy);
+    if (project.recovery.mode) return windowSummary(projectRoot, "History recovery required", executed, policy);
 
     if (policy.checkpointsEnabled) {
       const checkpoint = dueCheckpoint(project);
@@ -171,14 +211,14 @@ export async function runAutonomousWindow(projectRoot: string): Promise<RunResul
     }
 
     const progress = campaignProgress(project);
-    if (progress.complete) return windowSummary(projectRoot, "Campaign complete", executed);
+    if (progress.complete) return windowSummary(projectRoot, "Campaign complete", executed, policy);
 
     const eligible = nextEligibleStep(project.prompts, project.history.completedSteps, progress.deferred);
     if (eligible === null) {
-      if (progress.deferred.length === 0) return windowSummary(projectRoot, "No runnable tasks found", executed);
+      if (progress.deferred.length === 0) return windowSummary(projectRoot, "No runnable tasks found", executed, policy);
       deferralRound += 1;
       if (deferralRound > maxDeferralRounds) {
-        return windowSummary(projectRoot, `Deferral retry budget exhausted after ${maxDeferralRounds} round(s)`, executed);
+        return windowSummary(projectRoot, `Deferral retry budget exhausted after ${maxDeferralRounds} round(s)`, executed, policy);
       }
       const requeueStep = nextEligibleStep(project.prompts, project.history.completedSteps, []);
       await writeHistoryAtomic(projectRoot, {
@@ -208,13 +248,17 @@ export async function runAutonomousWindow(projectRoot: string): Promise<RunResul
 
     consecutiveHardFailures += 1;
     if (consecutiveHardFailures >= HARD_FAILURE_LIMIT) {
-      return windowSummary(projectRoot, `Aborted after ${HARD_FAILURE_LIMIT} consecutive hard failures (${result.message})`, executed);
+      return windowSummary(projectRoot, `Aborted after ${HARD_FAILURE_LIMIT} consecutive hard failures (${result.message})`, executed, policy);
     }
     await logEvent(
       projectRoot,
       "RUN_WINDOW_RETRY",
-      `Hard failure ${consecutiveHardFailures}/${HARD_FAILURE_LIMIT}: ${result.message} Retrying in ${HARD_FAILURE_BACKOFF_MS / 1000}s.`
+      `Hard failure ${consecutiveHardFailures}/${HARD_FAILURE_LIMIT}: ${result.message} Running preflight and retrying in ${HARD_FAILURE_BACKOFF_MS / 1000}s.`
     );
+    const recovery = await preflightLmStudio(project.settings);
+    for (const message of recovery.messages) {
+      await logEvent(projectRoot, "PREFLIGHT", message);
+    }
     await sleep(HARD_FAILURE_BACKOFF_MS);
   }
 }

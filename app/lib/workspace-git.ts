@@ -13,23 +13,28 @@ async function git(workspace: string, args: string[]) {
   return stdout.trim();
 }
 
+const RUNNER_EXCLUDES = ".campaign_runner_*\nnode_modules/\n.next/\ndist/\nbuild/\n.DS_Store\n";
+
 /**
  * Initializes a standalone git repository inside the workspace (nested repos
- * are fine — the runner's diagnostic .campaign_runner_* files are ignored so
- * rollback never deletes them). Commits any pre-existing content as the
- * baseline so EXISTING workspaces get a rollback point too. Best-effort:
- * callers treat git as optional and never fail a task on git errors.
+ * are fine). Runner exclusions live in .git/info/exclude — NOT a workspace
+ * .gitignore — so a model-authored .gitignore can never cause node_modules to
+ * be committed or the runner's diagnostic files to be removed by clean -fd.
+ * Commits any pre-existing content as the baseline so EXISTING workspaces get
+ * a rollback point too. Best-effort: callers treat git as optional and never
+ * fail a task on git errors.
  */
 export async function ensureWorkspaceRepo(projectRoot: string, workspace: string) {
-  if (await fileExists(path.join(workspace, ".git"))) return true;
+  if (await fileExists(path.join(workspace, ".git"))) {
+    await fs.writeFile(path.join(workspace, ".git", "info", "exclude"), RUNNER_EXCLUDES, "utf8").catch(() => undefined);
+    return true;
+  }
   try {
     await git(workspace, ["init"]);
     await git(workspace, ["config", "user.email", "campaign-runner@local"]);
     await git(workspace, ["config", "user.name", "Campaign Runner"]);
-    const gitignore = path.join(workspace, ".gitignore");
-    if (!(await fileExists(gitignore))) {
-      await fs.writeFile(gitignore, ".campaign_runner_*\nnode_modules/\n.DS_Store\n", "utf8");
-    }
+    await fs.mkdir(path.join(workspace, ".git", "info"), { recursive: true });
+    await fs.writeFile(path.join(workspace, ".git", "info", "exclude"), RUNNER_EXCLUDES, "utf8");
     await git(workspace, ["add", "-A"]);
     await git(workspace, ["commit", "--allow-empty", "-m", "Baseline: workspace state before campaign execution"]);
     await logEvent(projectRoot, "GIT_CHECKPOINT", "Initialized workspace git repository with baseline commit.");
@@ -66,7 +71,9 @@ export async function commitVerifiedTask(projectRoot: string, workspace: string,
 export async function rollbackWorkspace(projectRoot: string, workspace: string, reason: string) {
   if (!(await fileExists(path.join(workspace, ".git")))) return false;
   try {
-    await git(workspace, ["checkout", "--", "."]);
+    // reset --hard (not checkout -- .) because checkout fails with "pathspec
+    // did not match" when the baseline commit contains no files.
+    await git(workspace, ["reset", "--hard", "HEAD"]);
     await git(workspace, ["clean", "-fd"]);
     await logEvent(projectRoot, "GIT_ROLLBACK", `Workspace rolled back to last checkpoint: ${reason.slice(0, 300)}`);
     return true;

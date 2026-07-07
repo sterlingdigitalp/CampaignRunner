@@ -126,7 +126,12 @@ export function nextEligibleStep(prompts: CampaignPrompt[], completedSteps: numb
   const eligible = remaining.find((number) =>
     (byNumber.get(number)?.dependsOn ?? []).every((dependency) => completed.has(dependency) || !byNumber.has(dependency))
   );
-  return eligible ?? remaining[0] ?? null;
+  // No fallback past deferred dependencies: running a dependent task before
+  // its deferred prerequisite executes it under weaker verification gates
+  // (e.g. typecheck disabled because package.json doesn't exist yet). Let the
+  // deferral retry round heal the prerequisite instead. Fall back only on a
+  // structural deadlock (nothing deferred, e.g. a dependency cycle).
+  return eligible ?? (deferred.size === 0 ? remaining[0] ?? null : null);
 }
 
 async function logAdvancementState(
@@ -308,16 +313,35 @@ export async function executeNextHour(projectRoot: string): Promise<RunResult> {
       await transitionExecutionState(projectRoot, { state: attempt === 0 ? "RUNNING" : "REPAIRING", repairAttempt: attempt });
       const responseBeforeRepair = response;
       const validationBeforeRepair = protocolResult;
+
+      // Final-rung escalation: when every prior attempt died at the protocol
+      // layer (the model cannot express these files through nested JSON —
+      // JSON config files are the recurring case), downshift the last attempt
+      // to plain-text FILE_BLOCKS, which has no escaping to get wrong.
+      const downshift =
+        contract.builderProtocol === "FILE_JSON" &&
+        attempt === contract.repairPolicy.maxRepairAttempts &&
+        attempt > 0 &&
+        !protocolResult.valid;
+      const attemptProtocol = downshift ? "FILE_BLOCKS" : contract.builderProtocol;
+      if (downshift) {
+        await logEvent(projectRoot, "PROTOCOL_DOWNSHIFT", `Attempt ${attempt + 1} falls back to FILE_BLOCKS after repeated protocol failures.`);
+      }
+
       const promptToSend =
         attempt === 0
           ? runtimePrompt
-          : buildRepairPrompt(prompt, settings, finalResults, protocolResult, previousAttemptSummary, response, contract.builderProtocol);
+          : buildRepairPrompt(prompt, settings, finalResults, protocolResult, previousAttemptSummary, response, attemptProtocol);
+      // Repair escalation: first repair at temperature 0 (precision), later
+      // repairs at rising temperature — a deterministic wrong answer would
+      // otherwise repeat identically on every attempt.
+      const repairTemperature = attempt <= 1 ? 0 : Math.min(0.8, 0.4 * (attempt - 1));
       const completion =
         attempt === 0 && speculativeCompletion
           ? speculativeCompletion
           : await completeWithLmStudio(settings, promptToSend, {
-              protocol: contract.builderProtocol,
-              ...(attempt > 0 ? { temperature: 0, reasoningEffort: "high" as const } : {}),
+              protocol: attemptProtocol,
+              ...(attempt > 0 ? { temperature: repairTemperature, reasoningEffort: "high" as const } : {}),
               ...(tokenBudgetRaised ? { maxTokens: Math.min(settings.maxTokens * 2, TRUNCATION_MAX_TOKENS_CAP) } : {})
             });
       response = completion.content;
@@ -334,7 +358,7 @@ export async function executeNextHour(projectRoot: string): Promise<RunResult> {
       await logEvent(projectRoot, attempt === 0 ? "GENERATION_COMPLETED" : "REPAIR_COMPLETED", `Attempt ${attempt + 1} completed.`);
 
       await transitionExecutionState(projectRoot, { state: "WRITING_FILES" });
-      protocolResult = await writeCandidateFiles(projectRoot, settings.workspace, response, `${executionId}-attempt-${attempt + 1}`, contract.builderProtocol);
+      protocolResult = await writeCandidateFiles(projectRoot, settings.workspace, response, `${executionId}-attempt-${attempt + 1}`, attemptProtocol);
       if (attempt === 0 && (!protocolResult.valid || (protocolResult.originalErrors?.length ?? 0) > 0)) {
         await persistRepairSeed({
           projectRoot,

@@ -108,7 +108,11 @@ function buildDraftCampaign(brief: CampaignBrief, quoteProjectBrief = false) {
       `Task Type: ${type}`,
       `Depends On: ${depends}`,
       `Objective: ${title}. Use the project brief as source intent and produce only the scoped artifact for this task.`,
-      `Constraints: Keep the output focused. Do not complete future tasks early. Follow the Builder Protocol exactly.`,
+      `Constraints: Keep the output focused. Do not complete future tasks early. Follow the Builder Protocol exactly.${
+        brief.projectType === "Software"
+          ? " Do not use Node-only globals (require, module, process) unless @types/node is a declared devDependency. Import every name you use, even ones you also re-export."
+          : ""
+      }`,
       `Verification Goal: Confirm ${output} exists and satisfies this task objective.`,
       `Workspace Output:`,
       `FILE: ${output}`
