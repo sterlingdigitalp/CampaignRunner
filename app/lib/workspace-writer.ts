@@ -1,10 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { ensureDir } from "./files";
-import { validateFileProtocol } from "./file-protocol-validator";
+import { validateFileProtocol, validateJsonFileProtocol } from "./file-protocol-validator";
 import { logEvent } from "./logger";
 import { categorizeProtocolFailure } from "./repair-engine";
-import type { FileProtocolValidationResult } from "./types";
+import type { BuilderProtocolName, FileProtocolValidationResult } from "./types";
 
 function cleanFinalProtocolSection(response: string) {
   const endThinkIndex = response.lastIndexOf("</think>");
@@ -36,10 +36,19 @@ function tryDeterministicProtocolRepair(response: string, validation: FileProtoc
   };
 }
 
-export async function writeCandidateFiles(projectRoot: string, workspace: string, response: string, executionId: string) {
+export async function writeCandidateFiles(
+  projectRoot: string,
+  workspace: string,
+  response: string,
+  executionId: string,
+  protocol: BuilderProtocolName = "FILE_BLOCKS"
+) {
   await ensureDir(workspace);
-  const initialValidation = validateFileProtocol(response);
-  const validation = initialValidation.valid ? initialValidation : tryDeterministicProtocolRepair(response, initialValidation) ?? initialValidation;
+  const initialValidation = protocol === "FILE_JSON" ? validateJsonFileProtocol(response) : validateFileProtocol(response);
+  const validation =
+    initialValidation.valid || protocol === "FILE_JSON"
+      ? initialValidation
+      : tryDeterministicProtocolRepair(response, initialValidation) ?? initialValidation;
   if (!validation.valid) {
     await fs.writeFile(path.join(workspace, `.campaign_runner_rejected_response_${executionId}.md`), response, "utf8");
     await logEvent(projectRoot, "PROTOCOL_REJECTED", validation.errors.map((error) => error.message).join(" | "));

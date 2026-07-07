@@ -11,6 +11,7 @@ type ArtifactFile = { name: string; path: string; updatedAt: string; size: numbe
 type Artifacts = {
   outputs: ArtifactFile[];
   generatedFiles: ArtifactFile[];
+  repairFiles?: ArtifactFile[];
   runLog: string;
   summary: string;
   campaignAst: string;
@@ -18,6 +19,10 @@ type Artifacts = {
   compilerReport: string;
   plannerReport: string;
   metrics: string;
+  metricsValidation?: string;
+  benchmark?: string;
+  benchmarkSummary?: string;
+  configValidation?: string;
   executionState: string;
   policy: string;
 };
@@ -327,6 +332,17 @@ export default function Home() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function runWindow() {
+    if (!project) return;
+    setMessage(`Autonomous window started; running until ${project.settings.windowEnd}. Progress updates on the dashboard.`);
+    postJson<{ message: string }>("/api/run", { projectRoot: project.projectRoot, mode: "window" })
+      .then(async (result) => {
+        setMessage(result.message);
+        await loadProject(project.projectRoot).catch(() => undefined);
+      })
+      .catch((error) => setMessage(error instanceof Error ? error.message : "Autonomous window failed."));
   }
 
   async function setPaused(paused: boolean) {
@@ -649,11 +665,31 @@ export default function Home() {
                     Lock Timeout
                     <input className={`${fieldClass()} mt-2`} type="number" value={settingsDraft.lockTimeoutMinutes} onChange={(event) => setSettingsDraft({ ...settingsDraft, lockTimeoutMinutes: Number(event.target.value) })} />
                   </label>
+                  <label className="text-sm font-medium">
+                    Context Tokens
+                    <input className={`${fieldClass()} mt-2`} type="number" value={settingsDraft.contextTokens} onChange={(event) => setSettingsDraft({ ...settingsDraft, contextTokens: Number(event.target.value) })} />
+                  </label>
+                  <label className="text-sm font-medium">
+                    Reasoning Effort
+                    <select className={`${fieldClass()} mt-2`} value={settingsDraft.reasoningEffort} onChange={(event) => setSettingsDraft({ ...settingsDraft, reasoningEffort: event.target.value as RunnerSettings["reasoningEffort"] })}>
+                      <option value="low">low</option>
+                      <option value="medium">medium</option>
+                      <option value="high">high</option>
+                    </select>
+                  </label>
+                  <label className="text-sm font-medium">
+                    Window Start (HH:MM)
+                    <input className={`${fieldClass()} mt-2`} value={settingsDraft.windowStart} onChange={(event) => setSettingsDraft({ ...settingsDraft, windowStart: event.target.value })} />
+                  </label>
+                  <label className="text-sm font-medium">
+                    Window End (HH:MM)
+                    <input className={`${fieldClass()} mt-2`} value={settingsDraft.windowEnd} onChange={(event) => setSettingsDraft({ ...settingsDraft, windowEnd: event.target.value })} />
+                  </label>
                 </div>
                 <div className="border border-line bg-white p-4 text-sm">
-                  <h3 className="font-semibold">Recommended LM Studio Profile</h3>
+                  <h3 className="font-semibold">Recommended LM Studio Profile (gpt-oss-120b, M-series 128GB)</h3>
                   <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                    {["Context 16K-32K", "Temperature 0.1", "Top P 0.9", "Top K 40", "Repeat Penalty 1.1", "Flash Attention ON", "Unified KV Cache ON", "Keep Model Loaded ON", "MTP ON", "Concurrent Predictions 1", "Recommended Output <2000 tokens"].map((item) => (
+                    {["Context 65536", "Temperature 0.2", "Flash Attention ON", "KV Cache F16", "GPU Offload MAX", "Keep Model Loaded ON (no TTL)", "Reasoning Effort high", "Structured Output via FILE_JSON protocol", "Max Output 16384 tokens", "Server: lms server start (headless)"].map((item) => (
                       <div key={item} className="border-b border-line pb-1">{item}</div>
                     ))}
                   </div>
@@ -681,6 +717,25 @@ export default function Home() {
                         <label className="flex items-center gap-2 pt-6">
                           <input type="checkbox" checked={policyDraft.acceptOnlyVerified} onChange={(event) => setPolicyDraft({ ...policyDraft, acceptOnlyVerified: event.target.checked })} />
                           Verified only
+                        </label>
+                        <label>
+                          Builder Protocol
+                          <select className={`${fieldClass()} mt-1`} value={policyDraft.builderProtocol ?? "FILE_JSON"} onChange={(event) => setPolicyDraft({ ...policyDraft, builderProtocol: event.target.value as ExecutionPolicy["builderProtocol"] })}>
+                            <option value="FILE_JSON">FILE_JSON (structured output)</option>
+                            <option value="FILE_BLOCKS">FILE_BLOCKS (legacy)</option>
+                          </select>
+                        </label>
+                        <label className="flex items-center gap-2 pt-6">
+                          <input type="checkbox" checked={policyDraft.deferOnFailure ?? true} onChange={(event) => setPolicyDraft({ ...policyDraft, deferOnFailure: event.target.checked })} />
+                          Defer failed tasks
+                        </label>
+                        <label className="flex items-center gap-2 pt-6">
+                          <input type="checkbox" checked={policyDraft.enforceDeclaredOutputs ?? true} onChange={(event) => setPolicyDraft({ ...policyDraft, enforceDeclaredOutputs: event.target.checked })} />
+                          Require declared outputs
+                        </label>
+                        <label>
+                          Deferral Rounds
+                          <input className={`${fieldClass()} mt-1`} type="number" value={policyDraft.maxDeferralRounds ?? 2} onChange={(event) => setPolicyDraft({ ...policyDraft, maxDeferralRounds: Number(event.target.value) })} />
                         </label>
                       </div>
                       {policyDraft.verificationPipeline.map((step, index) => (
@@ -792,6 +847,9 @@ export default function Home() {
                   </Button>
 	                  <Button onClick={runNow} disabled={busy || (dashboard?.completed ?? 0) >= (dashboard?.taskCount ?? 0)}>
                     <Play size={16} /> Run Now
+                  </Button>
+                  <Button onClick={runWindow} disabled={busy || (dashboard?.completed ?? 0) >= (dashboard?.taskCount ?? 0)}>
+                    <TimerReset size={16} /> Run Window (until {project.settings.windowEnd})
                   </Button>
                   <Button variant="secondary" onClick={() => setPaused(true)} disabled={busy || project.settings.paused}>
                     <Pause size={16} /> Pause
@@ -953,8 +1011,21 @@ function PreviewBlock({ title, value }: { title: string; value: string }) {
 function ExecutionMonitor({ artifacts, project }: { artifacts: Artifacts | null; project: ProjectSummary | null }) {
   const state = parseJson<PersistedExecutionState>(artifacts?.executionState);
   const metrics = parseJson<Record<string, unknown>>(artifacts?.metrics);
+  const configValidation = parseJson<{ status: string; diagnostics: Array<{ code: string; message: string }>; effectiveProfile?: string; enabledVerifierCount?: number; configuredVerifierCount?: number }>(artifacts?.configValidation);
+  const verificationSummary = metrics?.verificationSummary as
+    | {
+        configuredVerifiers?: number;
+        executedVerifiers?: number;
+        skippedVerifiers?: number;
+        passedVerifiers?: number;
+        failedVerifiers?: number;
+        noopPipelineRuns?: number;
+      }
+    | undefined;
+  const protocolFailures = (metrics?.protocolFailuresByCategory as Array<{ category: string; count: number }> | undefined) ?? [];
   const policy = parseJson<ExecutionPolicy>(artifacts?.policy);
   const latest = project?.history.executions.at(-1);
+  const latestProtocolFailures = latest?.protocolFailures ?? [];
 
   return (
     <div className="grid gap-4">
@@ -963,6 +1034,48 @@ function ExecutionMonitor({ artifacts, project }: { artifacts: Artifacts | null;
         <Metric label="Current Verifier" value={state?.currentVerifier ?? "None"} />
         <Metric label="Repair Attempt" value={state?.repairAttempt ?? 0} />
         <Metric label="Final Status" value={state?.finalStatus ?? latest?.finalStatus ?? "None"} />
+      </div>
+      <div className="grid gap-3 md:grid-cols-4">
+        <Metric label="Pipeline Runs" value={String(metrics?.verificationPipelineRuns ?? 0)} />
+        <Metric label="No-op Runs" value={String(metrics?.verificationPipelineNoopRuns ?? 0)} />
+        <Metric label="Verifier Passes" value={String(verificationSummary?.passedVerifiers ?? metrics?.individualVerifierPasses ?? 0)} />
+        <Metric label="Verifier Failures" value={String(verificationSummary?.failedVerifiers ?? metrics?.individualVerifierFailures ?? 0)} />
+      </div>
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div className="border border-line bg-white p-4">
+          <h3 className="font-semibold">Runtime Verification</h3>
+          <div className="mt-3 grid gap-2 text-sm md:grid-cols-2">
+            <div><span className="font-medium">Configured:</span> {verificationSummary?.configuredVerifiers ?? 0}</div>
+            <div><span className="font-medium">Executed:</span> {verificationSummary?.executedVerifiers ?? 0}</div>
+            <div><span className="font-medium">Skipped:</span> {verificationSummary?.skippedVerifiers ?? 0}</div>
+            <div><span className="font-medium">No-op Pipelines:</span> {verificationSummary?.noopPipelineRuns ?? 0}</div>
+            <div><span className="font-medium">Config:</span> {configValidation?.status ?? "Unknown"}</div>
+            <div><span className="font-medium">Profile:</span> {configValidation?.effectiveProfile ?? project?.campaignMetadata.profile ?? "Generic"}</div>
+          </div>
+          {(configValidation?.diagnostics?.length ?? 0) > 0 && (
+            <ul className="mt-3 list-disc pl-5 text-sm text-amber-800">
+              {configValidation?.diagnostics.map((diagnostic) => <li key={diagnostic.code}>{diagnostic.message}</li>)}
+            </ul>
+          )}
+        </div>
+        <div className="border border-line bg-white p-4">
+          <h3 className="font-semibold">Repair & Protocol</h3>
+          <div className="mt-3 grid gap-2 text-sm md:grid-cols-2">
+            <div><span className="font-medium">Repair Invocations:</span> {String(metrics?.repairInvocations ?? 0)}</div>
+            <div><span className="font-medium">Repair Successes:</span> {String(metrics?.repairSuccesses ?? 0)}</div>
+            <div><span className="font-medium">Repair Failures:</span> {String(metrics?.repairFailures ?? 0)}</div>
+            <div><span className="font-medium">Latest Protocol Issues:</span> {latestProtocolFailures.length}</div>
+          </div>
+          <div className="mt-3 max-h-32 overflow-auto text-sm">
+            {protocolFailures.length === 0 && <div className="text-neutral-500">No protocol failures recorded.</div>}
+            {protocolFailures.map((failure) => (
+              <div key={failure.category} className="flex justify-between border-b border-line py-1">
+                <span>{failure.category}</span>
+                <span>{failure.count}</span>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="border border-line bg-white p-4">

@@ -41,6 +41,15 @@ export function validateExecutionPolicy(value: unknown) {
   boolean(data.stopOnFailure, "stopOnFailure");
   boolean(data.retryOnTimeout, "retryOnTimeout");
   boolean(data.acceptOnlyVerified, "acceptOnlyVerified");
+  if (data.builderProtocol !== undefined && data.builderProtocol !== "FILE_BLOCKS" && data.builderProtocol !== "FILE_JSON") {
+    throw new Error("builderProtocol must be FILE_BLOCKS or FILE_JSON.");
+  }
+  if (data.deferOnFailure !== undefined) boolean(data.deferOnFailure, "deferOnFailure");
+  if (data.maxDeferralRounds !== undefined) number(data.maxDeferralRounds, "maxDeferralRounds");
+  if (data.enforceDeclaredOutputs !== undefined) boolean(data.enforceDeclaredOutputs, "enforceDeclaredOutputs");
+  if (data.gitCheckpoints !== undefined) boolean(data.gitCheckpoints, "gitCheckpoints");
+  if (data.speculativeGeneration !== undefined) boolean(data.speculativeGeneration, "speculativeGeneration");
+  if (data.checkpointsEnabled !== undefined) boolean(data.checkpointsEnabled, "checkpointsEnabled");
   array(data.verificationPipeline, "verificationPipeline").forEach((step, index) => {
     const item = object(step, `verificationPipeline[${index}]`);
     if (typeof item.name !== "string") throw new Error(`verificationPipeline[${index}].name must be a string.`);
@@ -109,6 +118,7 @@ export function validateMetrics(value: unknown) {
   });
   if (data.completionMetrics !== undefined) object(data.completionMetrics, "completionMetrics");
   if (data.metricValidation !== undefined) object(data.metricValidation, "metricValidation");
+  if (data.verificationSummary !== undefined) object(data.verificationSummary, "verificationSummary");
   array(data.mostCommonVerifierFailures, "mostCommonVerifierFailures");
   return value;
 }
@@ -117,6 +127,8 @@ export function validateHistory(value: unknown) {
   const data = object(value, "history.json");
   number(data.currentStep, "currentStep");
   array(data.completedSteps, "completedSteps");
+  if (data.deferredSteps !== undefined) array(data.deferredSteps, "deferredSteps");
+  if (data.completedCheckpoints !== undefined) array(data.completedCheckpoints, "completedCheckpoints");
   stringOrNull(data.startedAt, "startedAt");
   stringOrNull(data.updatedAt, "updatedAt");
   if (data.lastRuntimeSeconds !== null) number(data.lastRuntimeSeconds, "lastRuntimeSeconds");

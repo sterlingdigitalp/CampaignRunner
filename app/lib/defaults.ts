@@ -6,16 +6,20 @@ export const DEFAULT_PROJECT_ROOT = path.join(process.cwd(), "Project");
 export function defaultSettings(projectRoot = DEFAULT_PROJECT_ROOT): RunnerSettings {
   return {
     endpoint: "http://localhost:1234/v1/chat/completions",
-    model: "local-model",
+    model: "gpt-oss-120b-fable-5-distilled",
     temperature: 0.2,
-    maxTokens: 4096,
-    requestTimeoutSeconds: 120,
-    requestRetries: 1,
+    maxTokens: 16384,
+    requestTimeoutSeconds: 900,
+    requestRetries: 2,
     projectRoot,
     workspace: path.join(projectRoot, "workspace"),
     runIntervalMinutes: 60,
     lockTimeoutMinutes: 180,
-    paused: false
+    paused: false,
+    contextTokens: 40000,
+    reasoningEffort: "high",
+    windowStart: "22:00",
+    windowEnd: "06:00"
   };
 }
 
@@ -23,6 +27,8 @@ export function defaultHistory(): RunnerHistory {
   return {
     currentStep: 1,
     completedSteps: [],
+    deferredSteps: [],
+    completedCheckpoints: [],
     startedAt: null,
     updatedAt: null,
     lastRuntimeSeconds: null,
@@ -39,6 +45,13 @@ export function defaultExecutionPolicy(): ExecutionPolicy {
     stopOnFailure: true,
     retryOnTimeout: true,
     acceptOnlyVerified: true,
+    builderProtocol: "FILE_JSON",
+    deferOnFailure: true,
+    maxDeferralRounds: 2,
+    enforceDeclaredOutputs: true,
+    gitCheckpoints: true,
+    speculativeGeneration: true,
+    checkpointsEnabled: true,
     verificationPipeline: [
       { name: "Typecheck", enabled: true, command: "npm run typecheck", timeoutSeconds: 120, continueOnFailure: false },
       { name: "Lint", enabled: false, command: "npm run lint", timeoutSeconds: 120, continueOnFailure: true },
@@ -79,6 +92,14 @@ export function defaultMetrics(): ExecutionMetrics {
     verificationPipelineSuccesses: 0,
     verificationPipelineFailures: 0,
     verificationPipelineNoopRuns: 0,
+    verificationSummary: {
+      configuredVerifiers: 0,
+      executedVerifiers: 0,
+      skippedVerifiers: 0,
+      passedVerifiers: 0,
+      failedVerifiers: 0,
+      noopPipelineRuns: 0
+    },
     individualVerifierPasses: 0,
     individualVerifierFailures: 0,
     repairInvocations: 0,

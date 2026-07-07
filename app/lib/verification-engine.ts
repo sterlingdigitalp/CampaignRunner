@@ -1,7 +1,43 @@
 import { exec } from "node:child_process";
-import type { ExecutionPolicy, VerificationResult } from "./types";
+import fs from "node:fs/promises";
+import path from "node:path";
+import type { CampaignPrompt, ExecutionPolicy, VerificationResult } from "./types";
 import { transitionExecutionState } from "./execution-state";
 import { logEvent } from "./logger";
+import { normalizeTaskOutputPath } from "./workspace-context";
+
+/**
+ * Contract check: every path the task declares under Workspace Output must
+ * exist after the candidate files are written. Returns null when the task
+ * declares no concrete paths; otherwise a synthetic verifier result so the
+ * decision engine, repair prompts, and metrics treat it like any verifier.
+ */
+export async function checkDeclaredOutputs(workspace: string, prompt: CampaignPrompt): Promise<VerificationResult | null> {
+  const declared = Array.from(
+    new Set(
+      (prompt.workspaceOutput ?? [])
+        .map(normalizeTaskOutputPath)
+        .filter((value) => value && !/\s|[<>]/.test(value))
+    )
+  );
+  if (declared.length === 0) return null;
+
+  const missing: string[] = [];
+  for (const relativePath of declared) {
+    await fs.access(path.join(workspace, relativePath)).catch(() => missing.push(relativePath));
+  }
+  const base = { verifier: "Declared Outputs", command: "declared-output-check", runtimeSeconds: 0, timedOut: false };
+  if (missing.length === 0) {
+    return { ...base, status: "PASS", stdout: `All ${declared.length} declared output(s) exist.`, stderr: "", exitCode: 0 };
+  }
+  return {
+    ...base,
+    status: "FAIL",
+    stdout: "",
+    stderr: `Missing declared workspace outputs: ${missing.join(", ")}. Write every FILE listed under this task's Workspace Output.`,
+    exitCode: 1
+  };
+}
 
 function runCommand(command: string, cwd: string, timeoutSeconds: number): Promise<VerificationResult> {
   const started = Date.now();

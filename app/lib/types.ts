@@ -207,6 +207,8 @@ export type CompilerReport = {
   diagnostics: CompilerDiagnostic[];
 };
 
+export type ReasoningEffort = "low" | "medium" | "high";
+
 export type RunnerSettings = {
   endpoint: string;
   model: string;
@@ -219,6 +221,10 @@ export type RunnerSettings = {
   runIntervalMinutes: number;
   lockTimeoutMinutes: number;
   paused: boolean;
+  contextTokens: number;
+  reasoningEffort: ReasoningEffort;
+  windowStart: string;
+  windowEnd: string;
 };
 
 export type StepRecord = {
@@ -245,6 +251,8 @@ export type FailureRecord = {
 export type RunnerHistory = {
   currentStep: number;
   completedSteps: number[];
+  deferredSteps: number[];
+  completedCheckpoints: number[];
   startedAt: string | null;
   updatedAt: string | null;
   lastRuntimeSeconds: number | null;
@@ -273,25 +281,34 @@ export type VerificationStep = {
   continueOnFailure: boolean;
 };
 
+export type BuilderProtocolName = "FILE_BLOCKS" | "FILE_JSON";
+
 export type ExecutionPolicy = {
   maxRepairAttempts: number;
   stopOnFailure: boolean;
   retryOnTimeout: boolean;
   acceptOnlyVerified: boolean;
   verificationPipeline: VerificationStep[];
+  builderProtocol?: BuilderProtocolName;
+  deferOnFailure?: boolean;
+  maxDeferralRounds?: number;
+  enforceDeclaredOutputs?: boolean;
+  gitCheckpoints?: boolean;
+  speculativeGeneration?: boolean;
+  checkpointsEnabled?: boolean;
 };
 
 export type CampaignProfileName = "Generic" | "TypeScript" | "Python" | "Markdown" | "Research" | "Documentation";
 
 export type CampaignProfile = {
   name: CampaignProfileName;
-  builderProtocol: "FILE_BLOCKS";
+  builderProtocol: BuilderProtocolName;
   verificationPipeline: VerificationStep[];
   workspaceExpectations: string[];
 };
 
 export type ExecutionContract = {
-  builderProtocol: "FILE_BLOCKS";
+  builderProtocol: BuilderProtocolName;
   verifierPipeline: VerificationStep[];
   acceptancePolicy: {
     acceptOnlyVerified: boolean;
@@ -321,7 +338,7 @@ export type FileProtocolFile = {
   content: string;
 };
 
-export type FileProtocolErrorCode = "NO_FILE_BLOCKS" | "MALFORMED_HEADER" | "DUPLICATE_FILE" | "EMPTY_FILE" | "UNSAFE_PATH";
+export type FileProtocolErrorCode = "NO_FILE_BLOCKS" | "MALFORMED_HEADER" | "DUPLICATE_FILE" | "EMPTY_FILE" | "UNSAFE_PATH" | "INVALID_JSON";
 
 export type ProtocolFailureCategory =
   | "PROTOCOL_DUPLICATE_FILE"
@@ -330,7 +347,8 @@ export type ProtocolFailureCategory =
   | "PROTOCOL_MISSING_FILE"
   | "PROTOCOL_INVALID_PATH"
   | "PROTOCOL_EMPTY_OUTPUT"
-  | "PROTOCOL_UNSAFE_PATH";
+  | "PROTOCOL_UNSAFE_PATH"
+  | "PROTOCOL_INVALID_JSON";
 
 export type FileProtocolValidationError = {
   code: FileProtocolErrorCode;
@@ -347,6 +365,13 @@ export type FileProtocolRepairRecord = {
   message: string;
 };
 
+export type TaskReport = {
+  status: "complete" | "partial" | "blocked";
+  notes: string;
+  blockers: string[];
+  followUps: string[];
+};
+
 export type FileProtocolValidationResult = {
   valid: boolean;
   files: FileProtocolFile[];
@@ -354,6 +379,7 @@ export type FileProtocolValidationResult = {
   normalizations: Array<{ input: string; output: string }>;
   originalErrors?: FileProtocolValidationError[];
   repairs?: FileProtocolRepairRecord[];
+  report?: TaskReport;
 };
 
 export type ProtocolFailureRecord = {
@@ -376,6 +402,41 @@ export type ExecutionRecord = {
   outputFile?: string;
   failureReason?: string;
   protocolFailures?: ProtocolFailureRecord[];
+  report?: TaskReport;
+};
+
+export type CampaignMemoryEntry = {
+  task: number;
+  title: string;
+  timestamp: string;
+  finalStatus: "VERIFIED" | "DEFERRED" | "FAILED";
+  status: TaskReport["status"];
+  notes: string;
+  blockers: string[];
+  followUps: string[];
+  kind?: "task" | "checkpoint";
+};
+
+export type CheckpointAmendment = {
+  action: "add" | "revise" | "none";
+  taskNumber?: number;
+  title?: string;
+  objective?: string;
+  constraints?: string;
+  dependsOn?: number[];
+  workspaceOutput?: string[];
+  reason: string;
+};
+
+export type CheckpointRunRecord = {
+  checkpoint: number;
+  title: string;
+  timestamp: string;
+  assessment: string;
+  amendments: CheckpointAmendment[];
+  applied: Array<{ action: string; taskNumber: number; summary: string }>;
+  rejected: Array<{ action: string; reason: string }>;
+  error?: string;
 };
 
 export type PersistedExecutionState = {
@@ -406,6 +467,14 @@ export type ExecutionMetrics = {
   verificationPipelineSuccesses: number;
   verificationPipelineFailures: number;
   verificationPipelineNoopRuns: number;
+  verificationSummary: {
+    configuredVerifiers: number;
+    executedVerifiers: number;
+    skippedVerifiers: number;
+    passedVerifiers: number;
+    failedVerifiers: number;
+    noopPipelineRuns: number;
+  };
   individualVerifierPasses: number;
   individualVerifierFailures: number;
   repairInvocations: number;
@@ -500,4 +569,5 @@ export type RunResult = {
   message: string;
   outputFile?: string;
   history?: RunnerHistory;
+  deferred?: boolean;
 };

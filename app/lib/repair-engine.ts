@@ -1,4 +1,5 @@
 import type {
+  BuilderProtocolName,
   CampaignPrompt,
   FileProtocolValidationError,
   FileProtocolValidationResult,
@@ -28,6 +29,7 @@ export function categorizeProtocolFailure(error: FileProtocolValidationError): P
   if (error.code === "MALFORMED_HEADER") return "PROTOCOL_MALFORMED_HEADER";
   if (error.code === "NO_FILE_BLOCKS") return "PROTOCOL_MISSING_FILE";
   if (error.code === "EMPTY_FILE") return "PROTOCOL_EMPTY_OUTPUT";
+  if (error.code === "INVALID_JSON") return "PROTOCOL_INVALID_JSON";
   if (error.code === "UNSAFE_PATH") return error.message.toLowerCase().includes("empty") ? "PROTOCOL_INVALID_PATH" : "PROTOCOL_UNSAFE_PATH";
   return "PROTOCOL_INVALID_PATH";
 }
@@ -41,7 +43,8 @@ function categoryRepairStrategy(category: ProtocolFailureCategory, file?: string
     PROTOCOL_MISSING_FILE: "Return the required FILE block using the task's Workspace Output path.",
     PROTOCOL_INVALID_PATH: "Use a non-empty relative path under the workspace.",
     PROTOCOL_EMPTY_OUTPUT: `Return non-empty complete file contents${target}.`,
-    PROTOCOL_UNSAFE_PATH: "Use a safe relative path. Do not use absolute paths or path traversal."
+    PROTOCOL_UNSAFE_PATH: "Use a safe relative path. Do not use absolute paths or path traversal.",
+    PROTOCOL_INVALID_JSON: 'Return exactly one JSON object matching {"files":[{"path":"relative/path","content":"..."}]} with no surrounding text, fences, or commentary.'
   };
   return strategies[category];
 }
@@ -98,7 +101,8 @@ export function buildRepairPrompt(
   results: VerificationResult[],
   protocol?: FileProtocolValidationResult,
   previousAttemptSummary = "Previous candidate did not satisfy the execution contract.",
-  previousResponse = ""
+  previousResponse = "",
+  builderProtocol: BuilderProtocolName = "FILE_BLOCKS"
 ) {
   const analysis = analyzePreviousResponse(previousResponse, protocol);
   const targets = buildRepairTargets(protocol);
@@ -173,11 +177,21 @@ export function buildRepairPrompt(
     targetedExcerpt,
     "",
     "Return instructions:",
-    "Return only the corrected FILE block(s) listed above.",
-    "Do not regenerate unrelated files.",
-    "Do not include explanations, reasoning, examples, or markdown fences around the response.",
-    "Use this exact Builder Protocol:",
-    "FILE: relative/path",
-    "<complete file contents>"
+    ...(builderProtocol === "FILE_JSON"
+      ? [
+          "Return only the corrected file(s) listed above.",
+          "Do not regenerate unrelated files.",
+          "Respond with exactly one JSON object and nothing else, using this Builder Protocol:",
+          '{"files":[{"path":"relative/path","content":"complete file contents"}]}',
+          "Each path must appear exactly once in the files array."
+        ]
+      : [
+          "Return only the corrected FILE block(s) listed above.",
+          "Do not regenerate unrelated files.",
+          "Do not include explanations, reasoning, examples, or markdown fences around the response.",
+          "Use this exact Builder Protocol:",
+          "FILE: relative/path",
+          "<complete file contents>"
+        ])
   ].join("\n");
 }

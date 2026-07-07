@@ -16,6 +16,9 @@ export async function updateMetrics(projectRoot: string, history: RunnerHistory,
   let verificationPipelineSuccesses = 0;
   let verificationPipelineFailures = 0;
   let verificationPipelineNoopRuns = 0;
+  let configuredVerifiers = 0;
+  let executedVerifiers = 0;
+  let skippedVerifiers = 0;
   const protocolFailuresByCategory = new Map<string, number>();
   const recurringProtocolFailures = new Map<string, { category: string; file?: string; count: number }>();
   const repairSuccessByCategory = new Map<string, { category: string; successes: number; failures: number }>();
@@ -23,6 +26,9 @@ export async function updateMetrics(projectRoot: string, history: RunnerHistory,
   executions.forEach((record) => {
     const categoriesInRecord = new Set<string>();
     const activeResults = record.verifierResults.filter((result) => result.status !== "SKIP");
+    configuredVerifiers += record.verifierResults.length;
+    skippedVerifiers += record.verifierResults.filter((result) => result.status === "SKIP").length;
+    executedVerifiers += activeResults.length;
     if (record.verifierResults.length > 0) {
       verificationPipelineRuns += 1;
       if (activeResults.length === 0) verificationPipelineNoopRuns += 1;
@@ -75,6 +81,14 @@ export async function updateMetrics(projectRoot: string, history: RunnerHistory,
     verificationPipelineSuccesses,
     verificationPipelineFailures,
     verificationPipelineNoopRuns,
+    verificationSummary: {
+      configuredVerifiers,
+      executedVerifiers,
+      skippedVerifiers,
+      passedVerifiers: individualVerifierPasses,
+      failedVerifiers: individualVerifierFailures,
+      noopPipelineRuns: verificationPipelineNoopRuns
+    },
     individualVerifierPasses,
     individualVerifierFailures,
     repairInvocations,

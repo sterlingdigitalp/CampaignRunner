@@ -15,6 +15,9 @@ export type ConfigValidationDiagnostic = {
 export type ConfigValidationReport = {
   status: ConfigValidationStatus;
   diagnostics: ConfigValidationDiagnostic[];
+  effectiveProfile: CampaignProfileName;
+  enabledVerifierCount: number;
+  configuredVerifierCount: number;
   checkedAt: string;
 };
 
@@ -31,12 +34,14 @@ export async function validateExecutionConfig(input: {
 }): Promise<ConfigValidationReport> {
   const diagnostics: ConfigValidationDiagnostic[] = [];
   const enabledVerifierCount = input.contract.verifierPipeline.filter((step) => step.enabled).length;
+  const configuredVerifierCount = input.policy.verificationPipeline.length;
+  const effectiveProfile: CampaignProfileName = isCampaignProfileName(input.metadata?.profile ?? "") ? (input.metadata?.profile as CampaignProfileName) : "Generic";
 
-  if (input.policy.acceptOnlyVerified && enabledVerifierCount === 0) {
+  if (input.policy.acceptOnlyVerified && configuredVerifierCount === 0 && enabledVerifierCount === 0) {
     diagnostics.push({
       severity: "WARNING",
       code: "ACCEPT_ONLY_VERIFIED_WITH_NO_ENABLED_VERIFIERS",
-      message: "acceptOnlyVerified is true but no verifiers are enabled for the current workspace maturity."
+      message: "acceptOnlyVerified is true but no verification pipeline is configured."
     });
   }
 
@@ -59,7 +64,7 @@ export async function validateExecutionConfig(input: {
     );
   }
 
-  if (input.contract.builderProtocol !== "FILE_BLOCKS") {
+  if (input.contract.builderProtocol !== "FILE_BLOCKS" && input.contract.builderProtocol !== "FILE_JSON") {
     diagnostics.push({
       severity: "FAIL",
       code: "INVALID_BUILDER_PROTOCOL",
@@ -78,7 +83,7 @@ export async function validateExecutionConfig(input: {
 
   const profile = input.metadata?.profile;
   if (!profile) {
-    diagnostics.push({ severity: "WARNING", code: "MISSING_RUNTIME_PROFILE", message: "Campaign profile metadata is missing." });
+    getCampaignProfile(effectiveProfile);
   } else {
     if (!isCampaignProfileName(profile)) {
       diagnostics.push({ severity: "WARNING", code: "UNKNOWN_RUNTIME_PROFILE", message: `Unknown campaign profile: ${profile}.` });
@@ -92,7 +97,7 @@ export async function validateExecutionConfig(input: {
     : diagnostics.some((diagnostic) => diagnostic.severity === "WARNING")
       ? "WARNING"
       : "PASS";
-  const report = { status, diagnostics, checkedAt: new Date().toISOString() };
+  const report = { status, diagnostics, effectiveProfile, enabledVerifierCount, configuredVerifierCount, checkedAt: new Date().toISOString() };
   await writeJson(projectPaths(input.projectRoot).configValidation, report);
   await logEvent(input.projectRoot, "CONFIG_VALIDATION", `${status}: ${diagnostics.map((item) => item.code).join(", ") || "No issues."}`);
   return report;

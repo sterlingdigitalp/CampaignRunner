@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Nightly Campaign Runner autonomous window.
+
+  Install:
+    1. Edit Hour/Minute below to match settings windowStart (default 22:00),
+       and the script path / PROJECT_ROOT if they differ.
+    2. cp scripts/com.campaignrunner.window.plist ~/Library/LaunchAgents/
+    3. launchctl load ~/Library/LaunchAgents/com.campaignrunner.window.plist
+
+  Uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.campaignrunner.window.plist
+
+  To wake the Mac from sleep before the window (requires sudo, one time):
+    sudo pmset repeat wakeorpoweron MTWRFSU 21:55:00
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.campaignrunner.window</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/sterlingdigital/campaignrunner/scripts/autonomous-window.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>APP_DIR</key>
+    <string>/Users/sterlingdigital/campaignrunner</string>
+    <key>PROJECT_ROOT</key>
+    <string>/Users/sterlingdigital/campaignrunner/Project</string>
+    <key>PORT</key>
+    <string>3000</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>22</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>/tmp/campaignrunner-window.out</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/campaignrunner-window.err</string>
+</dict>
+</plist>
